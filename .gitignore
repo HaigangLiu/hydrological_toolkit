@@ -104,3 +104,4 @@ ENV/
 # IDE settings
 .vscode/
 /hydrological_toolbox/asset/
+.DS_Store
