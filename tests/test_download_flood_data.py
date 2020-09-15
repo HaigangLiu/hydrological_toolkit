@@ -15,7 +15,8 @@ def test_download_flood():
 def test_download_flood_no_mans_land():
     """
     if the coordinates is not the United States at all,
-    or there is no locations nearby, then the download function will return None
+    or there is no locations nearby, then the download function will
+    raise a value error.
     """
     with pytest.raises(ValueError):
         download_flood_data.download_flood(start_date='2016-12-12',
