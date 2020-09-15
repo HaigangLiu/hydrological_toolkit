@@ -1,26 +1,24 @@
+from functools import cached_property
+import logging
 import os
 import re
 import requests
-import shutil
 import tarfile
+import shutil
+import tempfile
+from typing import List, Union, Tuple
+import warnings
+
 import geopandas as gpd
 import pandas as pd
-import pickle
-import logging
-import tempfile
-import pkg_resources
 from scipy.spatial import KDTree
-from functools import cached_property
 
-from data.util import get_in_between_dates, get_lat_lon_from_string
-from typing import List, Union, Tuple
+from ..data.util import get_in_between_dates, get_lat_lon_from_string
 
 logger = logging.getLogger(__name__)
 
 
 class RainDataDownloader:
-    """TODO  support the class method: from dataframe
-    """
     SCHEMA = {'LAT': float,
               'LON': float,
               'DATE': str,
@@ -58,57 +56,46 @@ class RainDataDownloader:
                              'Double check the date. For instance, if the starting date is '
                              'later than ending date, this error would show up.')
 
+    @staticmethod
+    def load_all_rainfall_locations():
+        """
+        get a complete list of nws locations (grid) since only these locations actually have data on them.
+        the way we use it is to find the closest nws location to the location provided by the user.
+        """
+        from ..data.util import nws_locations_nation_wide
+        locs = pd.read_parquet(nws_locations_nation_wide)
+        locs.rename({'lat': 'LAT', 'lon': 'LON', 'x': 'HRAPX', 'y': 'HRAPY'}, axis=1, inplace=True)
+        return locs
+
     @classmethod
     def from_state_name(cls, state_name, start_date: str, end_date: str, max_tries: int = 10, verbose: bool = True):
         """
-        in the nws data archive online, only non-zero data are actually stored,
-        we will populate all other locations with 0.
-        Hence, it is important to get a complete list for all nws locations in this state
-
         The location list can be represented as hrapx, and hrapy (that's all we need), which can be used to
         uniquely represent a point in the NWS grid. This would avoid geometry-based merging.
         Performance is much better this way.
 
-        Note: this process is slow so we cached a few states.
         """
-        cache_name = f'nws_location_{state_name}.pkl'  # _state_name is the acronym
-        try:
-            cached_locations = pkg_resources.resource_filename('asset.cache', cache_name)
-            with open(cached_locations, 'rb') as pickle_file:
-                statewide_rainfall_data = pickle.load(pickle_file)
+        from ..data.util import state_contours, get_state_name_from_abbreviation
+        state_contours = gpd.read_file(state_contours)
+        state_name = get_state_name_from_abbreviation(state_name)
+        state_contours = state_contours[state_contours.NAME == state_name]
+        df = RainDataDownloader.load_all_rainfall_locations()
+        gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.LON, df.LAT))
 
-        except FileNotFoundError:
-            logger.critical(f'did not find the list of available nws locations in cache. building cache now')
-            state_contours = gpd.read_file(pkg_resources.resource_filename('asset', 'state_shape'))
-            state_contours = state_contours[state_contours.NAME == state_name]
-
-            logger.critical(f'start loading the location information for {state_name}')
-            all_rainfall_locations = gpd.read_file(pkg_resources.resource_filename('asset', 'NWS_locations'))
-            statewide_rainfall_data = gpd.sjoin(left_df=all_rainfall_locations,
-                                                right_df=state_contours,
-                                                op='within',
-                                                how='inner') \
-                .drop(columns=['index_right'])
-            logger.critical(f'location information loading is done')
-            statewide_rainfall_data = statewide_rainfall_data[['HRAPX', 'HRAPY', 'LAT', 'LON']].reset_index(drop=True)
+        # find the locations (1) belong to nws and (2) belong to the state
+        statewide_rainfall_data = gpd.sjoin(left_df=gdf,
+                                            right_df=state_contours,
+                                            op='within',
+                                            how='inner') \
+            .drop(columns=['index_right'])
+        logger.info(f'location information loading is done')
+        statewide_rainfall_data = statewide_rainfall_data[['HRAPX', 'HRAPY', 'LAT', 'LON']].reset_index(drop=True)
 
         return cls(start_date=start_date,
                    end_date=end_date,
                    max_tries=max_tries,
                    verbose=verbose,
                    locations=statewide_rainfall_data)
-
-    # @classmethod
-    # def from_dataframe(cls, start_date, end_date, locations, max_tries=10, verbose=True, **kwargs):
-    #     try:
-    #         locations_ = list(locations[['LAT', 'LON']].values)
-    #     except KeyError:
-    #         if 'lat' in kwargs and 'lon' in kwargs:
-    #             locations_ = list(locations[[kwargs['lat'], kwargs['lon']]].values)
-    #         else:
-    #             print(kwargs)
-    #             raise KeyError('dataframe must have a LAT column and a LON column')
-    #     return cls(start_date=start_date, end_date=end_date, locations=locations_, max_tries=max_tries, verbose=verbose)
 
     @cached_property
     def locations_to_download(self) -> pd.DataFrame:
@@ -129,12 +116,10 @@ class RainDataDownloader:
         if not isinstance(locations, list):
             raise TypeError('locations are supposed to a list of coordinates')
 
-        with open('../asset/cache/all_nws_locs.pkl', 'rb') as pickle_file:
-            all_rainfall_locations = pickle.load(pickle_file)
-
         logger.critical('looking for the closest locations to the location you provide')
         logger.critical('make sure the latitude is coming before longitude.')
 
+        all_rainfall_locations = RainDataDownloader.load_all_rainfall_locations()
         _, indices = KDTree(all_rainfall_locations[['LAT', 'LON']].values).query(locations)
         locations_in_the_us = all_rainfall_locations.iloc[indices]
         locations_in_the_us = locations_in_the_us[['HRAPX', 'HRAPY', 'LAT', 'LON']]
@@ -166,9 +151,9 @@ class RainDataDownloader:
         """
         request_sent = requests.get(web_url)
         if not request_sent.ok:
-            logger.critical(f'the status code is {request_sent.status_code}')
+            warnings.warn(f'the status code is {request_sent.status_code}')
             if request_sent.status_code == 404:
-                logger.critical(f'the data you request might not be available. Possible reason: too old or too new.')
+                warnings.warn(f'the data you request might not be available. Possible reason: too old or too new.')
             return False, ''
         try:
             downloaded_content = request_sent.content
@@ -260,7 +245,7 @@ class RainDataDownloader:
 
     def download(self, single_thread=False):
         """
-        A caller to download all the download jobs in parallel. 
+        A caller to download all the download jobs in parallel.
         Returns a dataframe. User can call .to_csv() or .to_parquet() to save to local.
         """
         from multiprocessing import Pool, cpu_count
@@ -339,107 +324,3 @@ def download_rainfall(start_date, end_date, location, **kwargs):
     else:
         raise TypeError('the input can only be either string or a list of coordinates or a dataframe')
 
-
-if __name__ == '__main__':
-    # data_capital_city = download_rainfall(start_date='2013-01-01', end_date='2013-01-03', location='Columbia, South Carolina')
-    # d = download_rainfall(start_date='2013-01-01', end_date='2013-01-02', location='SC')
-    # d = download_rainfall(start_date='2013-01-01', end_date='2013-01-03', location=[[82, 21]])
-    # print(d.DATE)
-
-    # rain = download_rainfall(start_date='2013-01-01', end_date='2013-01-02',
-    #                          location=[[32.8, -83.1], [33.1, -82.0]])
-
-    import pandas as pd
-
-    # location_list = [[32.8, -83.1], [33.1, -82.0]]
-    # location_df = pd.DataFrame(location_list, columns=['latitude', 'longitude'])
-    rain = download_rainfall(start_date='2015-10-01',
-                             end_date='2015-10-07',
-                             location='1523 Greene Street Columbia, SC')
-    print(rain)
-
-
-# user can simply call the function without doing it from the class
-# def download_rainfall(start_date, end_date, location=None):
-#     if isinstance(location, str) and len(location) == 2:
-#         return RainDataDownloader(start_date=start_date,
-#                                   end_date=end_date,
-#                                   state_name=location,
-#                                   locations=None).download()
-#     elif isinstance(location, str) and len(location) > 2:
-#         logger.critical(f'looking the latitude and longitude for address {location}')
-#         from data.util import get_lat_lon_from_string
-#         lat, lon = get_lat_lon_from_string(location)
-#         return
-#
-#
-#
-#     elif state_name is not None and locations is None:
-#         return RainDataDownloader(start_date=start_date,
-#                                   end_date=end_date,
-#                                   state_name=state_name,
-#                                   locations=None).download()
-#     elif state_name is None and locations is None:
-#         raise ValueError('state name and locations cannot both be None')
-#     else:
-#         raise ValueError('only can set values to one of the two: location, state_name')
-
-
-# if __name__ == '__main__':
-#     from datetime import datetime
-#
-#     # RainDataDownloader(start_date='2011-01-01',
-#     #                    end_date='2011-01-04',
-#     #                    state_name='SC',
-#     #                    local_dir='/Users/hl774x/Documents/prcp_3/').download(async_=True)
-#     sc = RainDataDownloader.from_state_name(start_date='2011-01-01', end_date='2011-01-04', state_name='sc').download()
-#     print(sc)
-
-# RainDataDownloader(start_date='2011-01-01',
-#                    end_date='2011-01-04',
-#                    locations=[[20, 120]]).download()
-# download_rainfall('2013-01-01', '2013-01-02', locations=[[30, 19]])
-# download_rainfall('2011-01-01', '2010-01-02', locations='SC')
-
-# s = RainDataDownloader(start_date='2011-01-01',
-#                    end_date='2011-01-02',
-#                    state_name='SC').download()
-#
-# print(s)
-# print(datetime.now())
-# exit()
-# RainDataDownloader(start_date='2011-01-01',
-#                    end_date='2011-12-31',
-#                    state_name='SC',
-#                    local_dir='/Users/hl774x/Documents/prcp_3/').download(async_=True)
-# print(datetime.now())
-#
-# RainDataDownloader(start_date='2012-01-01',
-#                    end_date='2012-12-31',
-#                    state_name='SC',
-#                    local_dir='/Users/hl774x/Documents/prcp_3/').download(async_=True)
-# print(datetime.now())
-#
-# RainDataDownloader(start_date='2013-01-01',
-#                    end_date='2013-12-31',
-#                    state_name='SC',
-#                    local_dir='/Users/hl774x/Documents/prcp_3/').download(async_=True)
-# print(datetime.now())
-#
-# RainDataDownloader(start_date='2014-01-01',
-#                    end_date='2014-12-31',
-#                    state_name='SC',
-#                    local_dir='/Users/hl774x/Documents/prcp_3/').download(async_=True)
-#
-# print(datetime.now())
-# RainDataDownloader(start_date='2015-01-01',
-#                    end_date='2015-12-31',
-#                    state_name='SC',
-#                    local_dir='/Users/hl774x/Documents/prcp_3/').download(async_=True)
-# print(datetime.now())
-#
-# RainDataDownloader(start_date='2016-01-01',
-#                    end_date='2016-12-31',
-#                    state_name='SC',
-#                    local_dir='/Users/hl774x/Documents/prcp_3/').download(async_=True)
-# print(datetime.now())
