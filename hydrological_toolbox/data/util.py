@@ -17,10 +17,12 @@ import pyproj
 
 logger = logging.getLogger(__name__)
 
-states_name_and_patch_json = resource_filename('hydrological_toolbox', 'asset.state_names.json')
-state_patches = resource_filename('hydrological_toolbox', 'asset.state_boundaries.json')
-state_index_in_json = resource_filename('hydrological_toolbox', 'asset.mapping_state_to_contour_index.json')
-state_contours = resource_filename('hydrological_toolbox', 'asset.state_shape.cb_2017_us_state_500k.shp')
+# try to collect all asset files in one place
+states_name_and_patch_json = resource_filename('hydrological_toolbox.hydrological_toolbox', 'asset/state_names.json')
+state_patches = resource_filename('hydrological_toolbox.hydrological_toolbox', 'asset/state_boundaries.json')
+state_index_in_json = resource_filename('hydrological_toolbox.hydrological_toolbox', 'asset/mapping_state_to_contour_index.json')
+state_contours = resource_filename('hydrological_toolbox.hydrological_toolbox', 'asset/state_shape')
+nws_locations_nation_wide = resource_filename('hydrological_toolbox.hydrological_toolbox', 'asset/new_rain_mapping.parquet')
 
 
 def convert_coordinates(df: DataFrame,
@@ -45,19 +47,19 @@ def convert_coordinates(df: DataFrame,
     return output
 
 
-def get_state_name(state: str):
+def get_state_name_from_abbreviation(state: str):
     """
     translate the state acronym into the spelled out version
     the database also includes us small islands.
-    >>> get_state_name('SC')
+    >>> get_state_name_from_abbreviation('SC')
     'South Carolina'
-    >>> get_state_name('PR')
+    >>> get_state_name_from_abbreviation('PR')
     'Puerto Rico'
-    >>> get_state_name('HA')
+    >>> get_state_name_from_abbreviation('HA')
     Traceback (most recent call last):
         ...
     KeyError: 'this state acronym does not exist.'
-    >>> get_state_name('South Carolina')
+    >>> get_state_name_from_abbreviation('South Carolina')
     Traceback (most recent call last):
         ...
     ValueError: the input should be an acronym of a US state.
@@ -84,7 +86,7 @@ def get_state_contours(state_acronym: str, lat_first: bool = False) -> MultiPoly
         lat_first=True
         lat_first=True
     """
-    state_name = get_state_name(state_acronym)
+    state_name = get_state_name_from_abbreviation(state_acronym)
     with open(state_index_in_json) as json_file:
         state_index = json.load(json_file)
         if state_name not in state_index:
