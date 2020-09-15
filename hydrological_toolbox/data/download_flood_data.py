@@ -1,14 +1,17 @@
 from collections import defaultdict
 import logging
 import os
-import requests
-import pandas as pd
 from shutil import rmtree
 import tempfile
 from time import sleep
 from typing import List, Union
+import warnings
 
-from data.util import get_site_info
+import numpy as np
+import requests
+import pandas as pd
+
+from ..data.util import get_site_info
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +87,7 @@ class FloodDataDownloader:
                 f'sitefile_output&sitefile_output_format=rdb&column_name=agency_cd&column_name=site_no&column_name=' \
                 f'station_nm&list_of_search_criteria=lat_long_bounding_box&column_name=dec_lat_va' \
                 f'&column_name=dec_long_va'
+        print(query)
         list_of_stations = FloodDataDownloader.query_parser(query)
         logger.critical(f'there are {len(list_of_stations)} locations in the lat-lon box you specified')
         if verbose:
@@ -215,7 +219,13 @@ class FloodDataDownloader:
                     # sometimes there are more ort less than 5 columns. get rid them before concatenation
                     container.append(df)
         rmtree(self.temp_dir)
-        return pd.concat(container)
+        try:
+            combined = pd.concat(container)
+        except ValueError as e:
+            if 'No objects to concatenate' in str(e):
+                raise ValueError('there is no stations nearby')
+            combined = None
+        return combined
 
     @staticmethod
     def populate_dates_with_na(df: pd.DataFrame,
@@ -276,6 +286,10 @@ class FloodDataDownloader:
         return final_df
 
 
+longitude_warning = 'We have detected a positive longitude coordinate, however, we will treat this as west ' \
+                    'coordinates nevertheless since this is US data'
+
+
 def download_gauge(start_date: str,
                    end_date: str,
                    locations=None,
@@ -290,17 +304,24 @@ def download_gauge(start_date: str,
     6. a pandas dataframe with columns LAT and LON
     """
     if isinstance(locations, str) and len(locations) == 2:
+        # state abbreviation
         return FloodDataDownloader. \
             from_state_name(start_date=start_date, end_date=end_date, state_name=locations).download()
 
     elif isinstance(locations, list) and isinstance(locations[0], str):
+        # list of station ids (must be string)
         return FloodDataDownloader. \
             from_list_of_sitenumber(start_date=start_date, end_date=end_date, station_list=locations).download()
 
     elif locations is None:
+        # bounding box
         if 'lat_min' not in kwargs or 'lat_max' not in kwargs or 'lon_min' not in kwargs or 'lon_max' not in kwargs:
             raise KeyError(f'require lat_min, lat_max, lon_min and lon_max')
         lat_min, lat_max, lon_min, lon_max = kwargs['lat_min'], kwargs['lat_max'], kwargs['lon_min'], kwargs['lon_max']
+
+        if lon_min < 0 or lon_max < 0:
+            warnings.warn(message=longitude_warning)
+
         return FloodDataDownloader.from_lat_lon_box(start_date=start_date,
                                                     end_date=end_date,
                                                     lat_max=lat_max,
@@ -309,14 +330,19 @@ def download_gauge(start_date: str,
                                                     lon_min=lon_min).download()
 
     elif isinstance(locations, list) and isinstance(locations[0], list) and len(locations) == 1:
+        # list of coordinate (just one pair of coordinate)
         logger.critical('we treat the input as [lat, lon] coordinates since the list contains float number or int ')
         logger.critical("if you wish to download by site number, make sure pass a list of strings like ['02110400']")
         # pair of coord
         locations = locations[0]
         lat_max, lat_min = locations[0] + 1, locations[0] - 1
         lon_max, lon_min = locations[1] + 1, locations[1] - 1
-        logger.critical(f'we have expanded your input to a bounding box from {lat_min} to {lat_max} in lat, '
-                        f'and {lon_min} to {lon_max} in lon')
+
+        if lon_min < 0 or lon_max < 0:
+            warnings.warn(longitude_warning)
+
+        warnings.warn(f'we have expanded your input to a bounding box from {lat_min} to {lat_max} in lat, '
+                      f'and {lon_min} to {lon_max} in lon')
 
         return FloodDataDownloader.from_lat_lon_box(start_date=start_date,
                                                     end_date=end_date,
@@ -325,8 +351,8 @@ def download_gauge(start_date: str,
                                                     lat_min=lat_min,
                                                     lon_min=lon_min).download()
 
-    elif isinstance(locations, list) and isinstance(locations[0], list):  # list of coordinates
-        import numpy as np
+    elif isinstance(locations, list) and isinstance(locations[0], list):
+        # list of coordinates -> we find the patch (bounding box) for the list
         locations_array = np.array(locations)
         lat_max, lon_max = locations_array.max(axis=0)
         lat_min, lon_min = locations_array.min(axis=0)
@@ -348,32 +374,3 @@ def download_gauge(start_date: str,
 
 download_flood = download_gauge
 
-if __name__ == '__main__':
-    # s = FloodDataDownloader.from_state_name(state_name='SC', start_date='2016-12-12', end_date='2016-12-31').download()
-    # s = FloodDataDownloader.from_lat_lon_box(lat_max=32, lat_min=30, lon_min=-83, lon_max=-82,
-    #                                          start_date='2016-12-12', end_date='2016-12-31').download()
-    # pass
-
-    # by_state_name = download_gauge(start_date='2016-12-12',
-    #                                end_date='2016-12-31',
-    #                                locations='SC')
-    #
-    # by_site_number = download_gauge(start_date='2016-12-12',
-    #                                 end_date='2016-12-31',
-    #                                 locations=['02110400'])
-    # #
-    by_coordinates = download_gauge(start_date='2016-12-12',
-                                    end_date='2016-12-31',
-                                    locations=[[32, -82]])
-
-    # by_bounding_box = download_gauge(lat_max=32,
-    #                                  lat_min=30,
-    #                                  lon_min=-83,
-    #                                  lon_max=-82,
-    #                                  start_date='2016-12-12',
-    #                                  end_date='2016-12-31')
-
-    # print(t.columns)
-    # print(t)
-    # t = download_gauge(lat_max=32, lat_min=30, lon_min=-83, lon_max=-82, start_date='2016-12-12', end_date='2016-12-31')
-    # t = download_gauge(lat_max=32, lat_min=30, lon_min=-83, lon_max=-82, start_date='2016-12-12', end_date='2016-12-31')
