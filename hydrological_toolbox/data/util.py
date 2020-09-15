@@ -2,7 +2,7 @@ import json
 from scipy.spatial import KDTree
 from typing import List, Union
 import logging
-import pkg_resources
+from pkg_resources import resource_filename
 from functools import cached_property
 
 from pandas import date_range, DataFrame, concat, merge, read_parquet
@@ -17,10 +17,10 @@ import pyproj
 
 logger = logging.getLogger(__name__)
 
-states_name_and_patch_json = pkg_resources.resource_filename('asset', 'state_names.json')
-state_patches = pkg_resources.resource_filename('asset', 'state_boundaries.json')
-state_index_in_json = pkg_resources.resource_filename('asset', 'mapping_state_to_contour_index.json')
-state_contours = pkg_resources.resource_filename('asset.state_shape', 'cb_2017_us_state_500k.shp')
+states_name_and_patch_json = resource_filename('hydrological_toolbox', 'asset.state_names.json')
+state_patches = resource_filename('hydrological_toolbox', 'asset.state_boundaries.json')
+state_index_in_json = resource_filename('hydrological_toolbox', 'asset.mapping_state_to_contour_index.json')
+state_contours = resource_filename('hydrological_toolbox', 'asset.state_shape.cb_2017_us_state_500k.shp')
 
 
 def convert_coordinates(df: DataFrame,
@@ -473,6 +473,7 @@ def get_lat_lon_from_string(address):
     geolocator = Nominatim(user_agent="city")
     location = geolocator.geocode(address)
     return location.latitude, location.longitude
+
 
 get_lat_lon_from_address = get_lat_lon_from_string
 
