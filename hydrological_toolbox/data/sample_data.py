@@ -5,29 +5,37 @@ import pandas as pd
 import numpy as np
 from scipy.spatial import distance_matrix
 
-from data.util import convert_daily_to_monthly, spatial_left_join_k_neighbors
+from ..data.util import convert_daily_to_monthly, spatial_left_join
 
 logger = logging.getLogger(__name__)
 
 
-def load_daily_rain(description: bool = True) -> pd.DataFrame:
+daily_rain_dir = resource_stream('hydrological_toolbox.hydrological_toolbox',
+                                 'asset/sample_data_sc/sc_rain_2015.parquet')
+daily_flood_dir = resource_stream('hydrological_toolbox.hydrological_toolbox',
+                                  'asset/sample_data_sc/GAGE-20110101-20161231-SC.parquet')
+
+
+def load_daily_rain(load_descriptions: bool = True) -> pd.DataFrame:
     """
-    This function is going to print a description of the dataset. set description=False to silent this.
+    This function by default return a description of the dataset.
+    Set description=False to silent this.
     """
     description_of_daily_rain = """
     This is the daily rainfall from 2015 in South Carolina from https://water.weather.gov/precip/download.php
     * The daily data is accumulation in inches.
     * Here's a short intro according to National Weather Service:
     ```
-    The precipitation data are quality-controlled, multi-sensor (radar and rain gauge) precipitation estimates 
+    The precipitation data are quality-controlled, multi-sensor (radar and rain gauge) precipitation estimates
     obtained from National Weather Service (NWS) River Forecast Centers (RFCs) and mosaicked by
-    National Centers for Environmental Prediction (NCEP). 
+    National Centers for Environmental Prediction (NCEP).
     ```
+
+    You can set 'load_descriptions=False' if you do not wish to see this intro next time'.
     """
-    if description:
-        logger.critical(description_of_daily_rain)
-    file_ = resource_stream('asset.sample_data_sc', 'sc_rain_2015.parquet')
-    return pd.read_parquet(file_)
+    if load_descriptions:
+        print(description_of_daily_rain)
+    return pd.read_parquet(daily_rain_dir)
 
 
 def load_daily_flood(description: bool = True) -> pd.DataFrame:
@@ -43,13 +51,14 @@ def load_daily_flood(description: bool = True) -> pd.DataFrame:
     The USGS investigates the occurrence, quantity, quality, distribution, and
     movement of surface and underground waters. We focus on surface water and gage level measurement.
     Gage level are measured in feet.
+
+    you can set 'load_descriptions=false' if you do not wish to see this intro next time.
     """
 
     if description:
-        logger.critical(description_of_flood)
+        print(description_of_flood)
 
-    daily_flood_file = resource_stream('asset.sample_data_sc', 'GAGE-20110101-20161231-SC.parquet')
-    daily_flood = pd.read_parquet(daily_flood_file)
+    daily_flood = pd.read_parquet(daily_flood_dir)
     daily_flood['DATE'] = pd.to_datetime(daily_flood.DATE)
     daily_flood = daily_flood[daily_flood.DATE.dt.year == 2015]
     return daily_flood
@@ -60,17 +69,19 @@ def load_monthly_rain(agg_function: Union[None, dict] = None, description: bool 
     This function is going to print a description of the dataset. set description=False to silent this.
     """
     description_of_monthly_rain = """
-    * This is the monthly aggregation of daily rain, whose description can be found by calling 
+    * This is the monthly aggregation of daily rain, whose description can be found by calling
     load_daily_rain(description=True).
     * The aggregation function is to get sum/mean/max/min of the daily accumulation data by default.
     User can change the default by setting for example
     `agg_funcs = {value_col: [('MIN', np.min), ('MAX', np.max)]}` to get only max and min of daily value for each month.
     * The unit is inch.
+
+    you can set 'load_descriptions=false' if you do not wish to see this intro next time.
     """
     if description:
-        logger.critical(description_of_monthly_rain)
+        print(description_of_monthly_rain)
 
-    daily_rain = load_daily_rain(description=False)
+    daily_rain = load_daily_rain(load_descriptions=False)
     monthly_rain = convert_daily_to_monthly(df=daily_rain,
                                             coordinate_x='LAT',
                                             coordinate_y='LON',
@@ -91,17 +102,20 @@ def load_monthly_flood(daily_source='GAGE_MEAN',
     """
 
     monthly_flood_description = """
-    * This is the monthly aggregation of daily flood, whose description can be found by calling 
+    * This is the monthly aggregation of daily flood, whose description can be found by calling
     load_daily_flood(description=True).
     * The aggregation function is to get sum/mean/max/min of the daily MEAN data by default.
     User can change the default by setting for example
     `agg_funcs = {value_col: [('MIN', np.min), ('MAX', np.max)]}` to get only max and min of daily value for each month.
-    Additionally, if one wish to get the monthly aggregation of daily max gage rather than average 
+    Additionally, if one wish to get the monthly aggregation of daily max gage rather than average
     gage level, set daily_source 'GAGE_MAX' when calling this function.
     * The unit is feet.
+
+    you can set 'load_descriptions=false' if you do not wish to see this intro next time.
     """
+
     if description:
-        logger.critical(monthly_flood_description)
+        print(monthly_flood_description)
 
     available_daily_sources = ['GAGE_MAX', 'GAGE_MIN', 'GAGE_MEAN']
 
@@ -141,15 +155,16 @@ def load_monthly_flood(daily_source='GAGE_MEAN',
 
 def load_monthly_flood_and_rain(description: bool = True) -> pd.DataFrame:
     description_for_flood_and_rain = """
-    This is the data for rainfall amount (inch) and gage level (feet) combined during 
-    2015. The data is obtained by aggregating the daily records.
-    
-    Note that the way to combine is not merging exactly based on keys, but finding 
-    the nearest rainfall value for each flood location. This is because the rainfall 
-    data are more dense than the flood measurement sites.
+    * This is the data for rainfall amount (inch) and gage level (feet) combined during
+    2015. The data is obtained by aggregating the daily records. Several ways of aggregations are
+    offered. The column name should be self explanatory.
+
+    * Specifically, for each of the flood data observation, we find the closest rainfall data point.
+
+    * you can set 'load_descriptions=false' if you do not wish to see this intro next time.
     """
     if description:
-        logger.critical(description_for_flood_and_rain)
+        print(description_for_flood_and_rain)
 
     month_flood = load_monthly_flood(description=False)
     month_rain = load_monthly_rain(description=False)
@@ -158,7 +173,7 @@ def load_monthly_flood_and_rain(description: bool = True) -> pd.DataFrame:
     for month in range(1, 13):
         rain = month_rain[(month_rain.MONTH == month) & (month_rain.YEAR == 2015)]
         flood = month_flood[(month_flood.MONTH == month) & (month_flood.YEAR == 2015)]
-        result.append(spatial_left_join_k_neighbors(flood, rain, left_on=['LAT', 'LON'], right_on=['LAT', 'LON'], k=1))
+        result.append(spatial_left_join(flood, rain, left_on=['LAT', 'LON'], right_on=['LAT', 'LON']))
 
     output = pd.concat(result)
     logger.critical(output.columns)
@@ -166,20 +181,14 @@ def load_monthly_flood_and_rain(description: bool = True) -> pd.DataFrame:
                    'MONTH_x': 'MONTH',
                    'LAT': 'LAT_GAGE',
                    'LON': 'LON_GAGE',
-                   'LAT_RIGHT_0': 'LAT_PRCP',
-                   'LON_RIGHT_0': 'LON_PRCP',
-                   'PRCP_MEAN_RIGHT_0': 'PRCP_MEAN',
-                   'PRCP_MAX_RIGHT_0': 'PRCP_MAX',
-                   'PRCP_MIN_RIGHT_0': 'PRCP_MIN',
-                   'PRCP_SUM_RIGHT_0': 'PRCP_SUM',
-                   },
+                   'LAT_RIGHT': 'LAT_PRCP',
+                   'LON_RIGHT': 'LON_PRCP' },
                   axis=1,
                   inplace=True)
 
     columns_kept = ['SITENUMBER', 'YEAR', 'MONTH', 'LAT_GAGE', 'LON_GAGE', 'LAT_PRCP', 'LON_PRCP',
                     'GAGE_MIN', 'GAGE_MAX', 'GAGE_MEAN', 'GAGE_SUM',
                     'PRCP_MIN', 'PRCP_MAX', 'PRCP_MEAN', 'PRCP_SUM']
-
     return output[columns_kept]
 
 
@@ -188,21 +197,21 @@ def load_daily_flood_and_rain(description: bool = True):
     This is the flood and rainfall data in South Carolina (daily)
     """
     description_for_flood_and_rain = """
-    This is the daily data for rainfall amount (inch) and gage level (feet) combined during 
-    2015 from Jan 1 to Dec 31. 
+    * This is the daily data for rainfall amount (inch) and gage level (feet) combined during
+    2015 from Jan 1 to Dec 31.
 
-    Note that the way to combine is not merging exactly based on keys, but finding 
-    the nearest rainfall value for each flood location. This is because the rainfall 
-    data are more dense than the flood measurement sites.
+    * Specifically, for each of the flood data observation, we find the closest rainfall data point.
+
+    * you can set 'load_descriptions=false' if you do not wish to see this intro next time.
     """
     if description:
-        logger.critical(description_for_flood_and_rain)
+        print(description_for_flood_and_rain)
 
     locations_in_flood = load_daily_flood(description=False)[['LAT', 'LON']].drop_duplicates()
     locations_in_flood['LAT'] = locations_in_flood['LAT'].astype(float)
     locations_in_flood['LON'] = locations_in_flood['LON'].astype(float)
 
-    locations_in_rain = load_daily_rain(description=False)[['LAT', 'LON']].drop_duplicates()
+    locations_in_rain = load_daily_rain(load_descriptions=False)[['LAT', 'LON']].drop_duplicates()
     locations_in_rain['LAT'] = locations_in_rain['LAT'].astype(float)
     locations_in_rain['LON'] = locations_in_rain['LON'].astype(float)
 
@@ -224,7 +233,7 @@ def load_daily_flood_and_rain(description: bool = True):
                                     right_on=['LAT_GAGE', 'LON_GAGE'],
                                     how='left')
 
-    all_rain = load_daily_rain(description=False)
+    all_rain = load_daily_rain(load_descriptions=False)
     all_rain['LAT'] = all_rain['LAT'].astype(float)
     all_rain['LON'] = all_rain['LON'].astype(float)
     all_rain['DATE'] = pd.to_datetime(all_rain.DATE)
