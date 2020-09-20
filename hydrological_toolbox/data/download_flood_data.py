@@ -1,25 +1,26 @@
-from collections import defaultdict
 import logging
 import os
-from shutil import rmtree
 import tempfile
+from collections import defaultdict
+from shutil import rmtree
 from time import sleep
 from typing import List, Union
-import warnings
 
-import numpy as np
-import requests
 import pandas as pd
+import requests
+from tqdm import tqdm
 
 from ..data.util import get_site_info
 
 logger = logging.getLogger(__name__)
 
 
-class FloodDataDownloader:
+class HydrologicalDataDownloader:
     """This class helps us to parse info from the following link, for example, algorithmically
     "https://waterdata.usgs.gov/nwis/dv?cb_00065=on&format=rdb&site_no=02153051&referred_module=sw&period=&begin_date" \
     "=2017-11-20&end_date=2018-11-20"
+
+    We will first determine which
         1. Note that there is a site number, we need to go to a different site to grab the site number list
         2. generate a url for each site with start, end date and the site number
         3. parse that url, download web page content and clean the data, which are written to a file
@@ -29,46 +30,77 @@ class FloodDataDownloader:
     on a high level, no matter what user wants as input (state name or station lat and lon), we have to convert to
     station id for the final query
     """
-    SCHEMA = {'SITENUMBER': str,  # make sure it is string since sometimes site number starts with 0
-              'STATION_NAME': str,
-              'LAT': float,
-              'LON': float,
-              'DATE': str,
-              'GAGE_MAX': float,
-              'GAGE_MIN': float,
-              'GAGE_MEAN': float
-              }
 
-    variable_id = '00065'  # rainfall attribute id
-
-    def __init__(self, start_date: str, end_date: str, station_info: dict, verbose: bool = True):
+    def __init__(self,
+                 start_date: str,
+                 end_date: str,
+                 station_info: dict,
+                 variable_name: str = 'GAGE',
+                 variable_id: str = '00065',
+                 verbose: bool = False):
         """
         :param start_date: first date, inclusive
         :param end_date: last date, inclusive
         :param station_info: key is the station number and the value is the downloadable url
         :param verbose: print more info about the downloading process
         """
+
+        self.SCHEMA = {'SITENUMBER': str,  # make sure it is string since sometimes site number starts with 0
+                       'STATION_NAME': str,
+                       'LAT': float,
+                       'LON': float,
+                       'DATE': str,
+                       f'{variable_name}_MAX': float,
+                       f'{variable_name}_MIN': float,
+                       f'{variable_name}_MEAN': float,
+                       f'{variable_name}_SUM': float,
+                       }
+
         self.start_date = start_date
         self.end_date = end_date
         self.verbose = verbose
         self.station_list = station_info
         self.temp_dir = tempfile.mkdtemp()
+        self.variable_id = variable_id
+        self.variable_name = variable_name
 
     @classmethod
-    def from_list_of_sitenumber(cls, start_date: str, end_date: str, station_list: List[str], verbose=True):
+    def from_list_of_sitenumber(cls,
+                                start_date: str,
+                                end_date: str,
+                                station_list: List[str],
+                                variable_name='GAGE',
+                                variable_id='00065',
+                                verbose=False):
         info = get_site_info(station_list)  # because station info asks not only site number but also lat and lon
-        return cls(start_date=start_date, end_date=end_date, station_info=info, verbose=verbose)
+        return cls(start_date=start_date,
+                   end_date=end_date,
+                   station_info=info,
+                   variable_name=variable_name,
+                   variable_id=variable_id,
+                   verbose=verbose)
 
     @classmethod
-    def from_state_name(cls, start_date: str, end_date: str, state_name: str, verbose: bool = True):
+    def from_state_name(cls,
+                        start_date: str,
+                        end_date: str,
+                        state_name: str,
+                        variable_name='GAGE',
+                        variable_id='00065',
+                        verbose: bool = False):
         """
         this will be revoked if user supplies a state name such as sc
         """
         query = f'https://waterdata.usgs.gov/nwis/nwismap?state_cd={state_name}&format=sitefile_output' \
                 f'&sitefile_output_format=rdb&column_name=agency_cd&column_name=site_no&column_name=station_nm' \
                 f'&column_name=dec_lat_va&column_name=dec_long_va'
-        list_of_stations = FloodDataDownloader.query_parser(query)
-        return cls(start_date=start_date, end_date=end_date, station_info=list_of_stations, verbose=verbose)
+        list_of_stations = HydrologicalDataDownloader.query_parser(query)
+        return cls(start_date=start_date,
+                   end_date=end_date,
+                   station_info=list_of_stations,
+                   variable_id=variable_id,
+                   variable_name=variable_name,
+                   verbose=verbose)
 
     @classmethod
     def from_lat_lon_box(cls,
@@ -78,7 +110,9 @@ class FloodDataDownloader:
                          lat_max: Union[float, int],
                          lon_min: Union[float, int],
                          lon_max: Union[float, int],
-                         verbose: bool = True):
+                         variable_name='GAGE',
+                         variable_id='00065',
+                         verbose: bool = False):
         """
         alternative constructor based on the lat lon box
         """
@@ -87,14 +121,18 @@ class FloodDataDownloader:
                 f'sitefile_output&sitefile_output_format=rdb&column_name=agency_cd&column_name=site_no&column_name=' \
                 f'station_nm&list_of_search_criteria=lat_long_bounding_box&column_name=dec_lat_va' \
                 f'&column_name=dec_long_va'
-        print(query)
-        list_of_stations = FloodDataDownloader.query_parser(query)
+        list_of_stations = HydrologicalDataDownloader.query_parser(query)
         logger.critical(f'there are {len(list_of_stations)} locations in the lat-lon box you specified')
         if verbose:
             logger.critical(f'here is the info of the stations: (set verbose=False to turn this off)')
             for station_name in list_of_stations.values():
                 logger.critical(f'{station_name}')
-        return cls(start_date=start_date, end_date=end_date, station_info=list_of_stations, verbose=verbose)
+        return cls(start_date=start_date,
+                   end_date=end_date,
+                   station_info=list_of_stations,
+                   variable_id=variable_id,
+                   variable_name=variable_name,
+                   verbose=verbose)
 
     @classmethod
     def from_dataframe(cls,
@@ -103,6 +141,8 @@ class FloodDataDownloader:
                        df: pd.DataFrame,
                        lat: str = 'LAT',
                        lon: str = 'LON',
+                       variable_name='GAGE',
+                       variable_id='00065',
                        verbose: bool = False):
 
         lat_min = df[lat].min()
@@ -115,6 +155,8 @@ class FloodDataDownloader:
                                     lat_max=lat_max,
                                     lon_min=lon_min,
                                     lon_max=lon_max,
+                                    variable_name=variable_name,
+                                    variable_id=variable_id,
                                     verbose=verbose)
 
     @staticmethod
@@ -195,6 +237,10 @@ class FloodDataDownloader:
 
     def _finish_up_and_tear_down(self):
         header = {'site_no': 'SITENUMBER', 'datetime': 'DATE'}
+        code_to_summary_type = {'00001': 'MAX',
+                                '00002': 'MIN',
+                                '00003': 'MEAN',
+                                '00006': 'SUM'}
         container = []
         for filename in os.listdir(self.temp_dir):
             if filename.endswith('.csv'):
@@ -202,30 +248,26 @@ class FloodDataDownloader:
                 df = pd.read_csv(file_abs_dir, index_col=0, dtype={'site_no': str})
                 os.remove(file_abs_dir)
                 for column in df.columns:
-                    if column.endswith(f'{self.variable_id}_00001'):
-                        header[column] = 'GAGE_MAX'
-                    elif column.endswith(f'{self.variable_id}_00002'):
-                        header[column] = 'GAGE_MIN'
-                    elif column.endswith(f'{self.variable_id}_00003'):
-                        header[column] = 'GAGE_MEAN'
-                    else:
-                        pass
+                    for code in code_to_summary_type:
+                        if column.endswith(f'{self.variable_id}_{code}'):
+                            header[column] = f'{self.variable_name}_{code_to_summary_type[code]}'
                 flag_cols = [col for col in df.columns if col.endswith('cd')]
                 df.rename(header, axis=1, inplace=True)
                 df.drop(columns=flag_cols, inplace=True)
 
-                _, colnum = df.shape
-                if colnum == 5:
-                    # sometimes there are more ort less than 5 columns. get rid them before concatenation
+                _, columns_count = df.shape
+                if 3 <= columns_count <= 5:
+                    # less than 3 columns means there is no data just location and date info
+                    # more than 5 means there are multiple versions of the variable; disregard this kind
                     container.append(df)
         rmtree(self.temp_dir)
         try:
-            combined = pd.concat(container)
+            return pd.concat(container)
         except ValueError as e:
             if 'No objects to concatenate' in str(e):
-                raise ValueError('there is no stations nearby')
-            combined = None
-        return combined
+                return None
+            else:
+                raise
 
     @staticmethod
     def populate_dates_with_na(df: pd.DataFrame,
@@ -261,39 +303,56 @@ class FloodDataDownloader:
             with Pool(cpu_count()) as process_executor:
                 result = process_executor.map_async(self.page_parser, jobs_site_number)
                 while not result.ready():
-                    logger.critical("Remaining locations to be processed: {}".format(result._number_left))
+                    if self.verbose:
+                        logger.critical("Remaining locations to be processed: {}".format(result._number_left))
                     result.wait(timeout=0.5)
         else:
-            for idx, job in enumerate(jobs_site_number):
-                if idx % 10 == 0:
-                    logger.info(f'this is the {idx}th stations')
-                    self.page_parser(job)
+            for job in tqdm(jobs_site_number):
+                self.page_parser(job)
 
         final_df = self._finish_up_and_tear_down()
-        final_df = self.populate_dates_with_na(df=final_df,
-                                               date_col='DATE',
-                                               id_col='SITENUMBER')
 
-        # populate the lat and lon information with ref table
-        final_df = pd.merge(left=final_df,
-                            right=self.ref_table,
-                            left_on=['SITENUMBER'],
-                            right_index=True,
-                            how='left')[['SITENUMBER', 'STATION_NAME', 'LAT', 'LON', 'DATE',
-                                         'GAGE_MAX', 'GAGE_MIN', 'GAGE_MEAN']]
+        if final_df is None:
+            import warnings
+            warnings.warn('got an empty dataframe. either the date range is not available, '
+                          'or such variable type does not exist in the USGS database')
+            return final_df
 
-        final_df = final_df.astype(self.SCHEMA)
-        return final_df
+        else:
+            final_df = self.populate_dates_with_na(df=final_df,
+                                                   date_col='DATE',
+                                                   id_col='SITENUMBER')
+
+            # note that some kinds of variables like prcp only has sum
+            # but gage only has min, max and mean, which mean most variables do
+            # not have exactly everything
+            measure_cols = [col for col in self.SCHEMA if col.startswith(self.variable_name) and col in final_df]
+            other_info = ['SITENUMBER', 'STATION_NAME', 'LAT', 'LON', 'DATE']
+            final_df = pd.merge(left=final_df,
+                                right=self.ref_table,
+                                left_on=['SITENUMBER'],
+                                right_index=True,
+                                how='left')[other_info + measure_cols]. \
+                reset_index()
+
+            for potential_col in self.SCHEMA.copy().keys():
+                if potential_col not in measure_cols and potential_col not in other_info:
+                    # get rid of the column before apply the schema
+                    del self.SCHEMA[potential_col]
+            final_df = final_df.astype(self.SCHEMA)
+
+            # if, for example, gage_mean, gage_max and gage_min are all missing
+            # we will delete this column
+            final_df.dropna(subset=measure_cols, how='all', inplace=True)
+            return final_df
 
 
-longitude_warning = 'We have detected a positive longitude coordinate, however, we will treat this as west ' \
-                    'coordinates nevertheless since this is US data'
-
-
-def download_gauge(start_date: str,
-                   end_date: str,
-                   locations=None,
-                   **kwargs):
+def download_hydrological_variable(start_date: str,
+                                   end_date: str,
+                                   variable_name='GAGE',
+                                   variable_id='00065',
+                                   locations=None,
+                                   **kwargs):
     """
     Here's a list of supported input as locations:
     1. a pair of coordinate [34, -82],
@@ -304,64 +363,62 @@ def download_gauge(start_date: str,
     6. a pandas dataframe with columns LAT and LON
     """
     if isinstance(locations, str) and len(locations) == 2:
-        # state abbreviation
-        return FloodDataDownloader. \
-            from_state_name(start_date=start_date, end_date=end_date, state_name=locations).download()
+        return HydrologicalDataDownloader. \
+            from_state_name(start_date=start_date,
+                            variable_name=variable_name,
+                            variable_id=variable_id,
+                            end_date=end_date,
+                            state_name=locations).download()
 
     elif isinstance(locations, list) and isinstance(locations[0], str):
-        # list of station ids (must be string)
-        return FloodDataDownloader. \
+        return HydrologicalDataDownloader. \
             from_list_of_sitenumber(start_date=start_date, end_date=end_date, station_list=locations).download()
 
     elif locations is None:
-        # bounding box
         if 'lat_min' not in kwargs or 'lat_max' not in kwargs or 'lon_min' not in kwargs or 'lon_max' not in kwargs:
             raise KeyError(f'require lat_min, lat_max, lon_min and lon_max')
         lat_min, lat_max, lon_min, lon_max = kwargs['lat_min'], kwargs['lat_max'], kwargs['lon_min'], kwargs['lon_max']
-
-        if lon_min < 0 or lon_max < 0:
-            warnings.warn(message=longitude_warning)
-
-        return FloodDataDownloader.from_lat_lon_box(start_date=start_date,
-                                                    end_date=end_date,
-                                                    lat_max=lat_max,
-                                                    lon_max=lon_max,
-                                                    lat_min=lat_min,
-                                                    lon_min=lon_min).download()
+        return HydrologicalDataDownloader.from_lat_lon_box(start_date=start_date,
+                                                           end_date=end_date,
+                                                           variable_name=variable_name,
+                                                           variable_id=variable_id,
+                                                           lat_max=lat_max,
+                                                           lon_max=lon_max,
+                                                           lat_min=lat_min,
+                                                           lon_min=lon_min).download()
 
     elif isinstance(locations, list) and isinstance(locations[0], list) and len(locations) == 1:
-        # list of coordinate (just one pair of coordinate)
         logger.critical('we treat the input as [lat, lon] coordinates since the list contains float number or int ')
         logger.critical("if you wish to download by site number, make sure pass a list of strings like ['02110400']")
         # pair of coord
         locations = locations[0]
         lat_max, lat_min = locations[0] + 1, locations[0] - 1
         lon_max, lon_min = locations[1] + 1, locations[1] - 1
+        logger.critical(f'we have expanded your input to a bounding box from {lat_min} to {lat_max} in lat, '
+                        f'and {lon_min} to {lon_max} in lon')
 
-        if lon_min < 0 or lon_max < 0:
-            warnings.warn(longitude_warning)
+        return HydrologicalDataDownloader.from_lat_lon_box(start_date=start_date,
+                                                           end_date=end_date,
+                                                           variable_name=variable_name,
+                                                           variable_id=variable_id,
+                                                           lat_max=lat_max,
+                                                           lon_max=lon_max,
+                                                           lat_min=lat_min,
+                                                           lon_min=lon_min).download()
 
-        warnings.warn(f'we have expanded your input to a bounding box from {lat_min} to {lat_max} in lat, '
-                      f'and {lon_min} to {lon_max} in lon')
-
-        return FloodDataDownloader.from_lat_lon_box(start_date=start_date,
-                                                    end_date=end_date,
-                                                    lat_max=lat_max,
-                                                    lon_max=lon_max,
-                                                    lat_min=lat_min,
-                                                    lon_min=lon_min).download()
-
-    elif isinstance(locations, list) and isinstance(locations[0], list):
-        # list of coordinates -> we find the patch (bounding box) for the list
+    elif isinstance(locations, list) and isinstance(locations[0], list):  # list of coordinates
+        import numpy as np
         locations_array = np.array(locations)
         lat_max, lon_max = locations_array.max(axis=0)
         lat_min, lon_min = locations_array.min(axis=0)
-        return FloodDataDownloader.from_lat_lon_box(start_date=start_date,
-                                                    end_date=end_date,
-                                                    lat_max=lat_max,
-                                                    lon_max=lon_max,
-                                                    lat_min=lat_min,
-                                                    lon_min=lon_min).download()
+        return HydrologicalDataDownloader.from_lat_lon_box(start_date=start_date,
+                                                           end_date=end_date,
+                                                           variable_name=variable_name,
+                                                           variable_id=variable_id,
+                                                           lat_max=lat_max,
+                                                           lon_max=lon_max,
+                                                           lat_min=lat_min,
+                                                           lon_min=lon_min).download()
     else:
         raise TypeError('we only support the following kind of input: '
                         '1. a pair of coordinate [34, -82] \n,'
@@ -372,5 +429,12 @@ def download_gauge(start_date: str,
                         '6. a pandas dataframe with columns LAT and LON')
 
 
-download_flood = download_gauge
-
+from functools import partial
+download_flood = partial(download_hydrological_variable,
+                         variable_name='GAGE',
+                         variable_id='00065')
+download_streamflow = partial(download_hydrological_variable,
+                              variable_name='StreamFlow',
+                              variable_id='00060')
+download_gauge = download_flood
+download_discharge = download_streamflow
