@@ -14,9 +14,11 @@ daily_rain_dir = resource_stream('hydrological_toolbox.hydrological_toolbox',
                                  'asset/sample_data_sc/sc_rain_2015.parquet')
 daily_flood_dir = resource_stream('hydrological_toolbox.hydrological_toolbox',
                                   'asset/sample_data_sc/GAGE-20110101-20161231-SC.parquet')
+daily_sst_dir = resource_stream('hydrological_toolbox.hydrological_toolbox',
+                                'asset/sst_near_charleston.parquet')
 
 
-def load_daily_rain(load_descriptions: bool = True) -> pd.DataFrame:
+def load_daily_rain(description: bool = False) -> pd.DataFrame:
     """
     This function by default return a description of the dataset.
     Set description=False to silent this.
@@ -33,12 +35,12 @@ def load_daily_rain(load_descriptions: bool = True) -> pd.DataFrame:
 
     You can set 'load_descriptions=False' if you do not wish to see this intro next time'.
     """
-    if load_descriptions:
+    if description:
         print(description_of_daily_rain)
     return pd.read_parquet(daily_rain_dir)
 
 
-def load_daily_flood(description: bool = True) -> pd.DataFrame:
+def load_daily_flood(description: bool = False) -> pd.DataFrame:
     description_of_flood = """
     This is the daily gage level from USGS. For further information once can refer to this link
      https://waterdata.usgs.gov/nwis
@@ -64,7 +66,7 @@ def load_daily_flood(description: bool = True) -> pd.DataFrame:
     return daily_flood
 
 
-def load_monthly_rain(agg_function: Union[None, dict] = None, description: bool = True) -> pd.DataFrame:
+def load_monthly_rain(agg_function: Union[None, dict] = None, description: bool = False) -> pd.DataFrame:
     """
     This function is going to print a description of the dataset. set description=False to silent this.
     """
@@ -81,7 +83,7 @@ def load_monthly_rain(agg_function: Union[None, dict] = None, description: bool 
     if description:
         print(description_of_monthly_rain)
 
-    daily_rain = load_daily_rain(load_descriptions=False)
+    daily_rain = load_daily_rain()
     monthly_rain = convert_daily_to_monthly(df=daily_rain,
                                             coordinate_x='LAT',
                                             coordinate_y='LON',
@@ -93,7 +95,7 @@ def load_monthly_rain(agg_function: Union[None, dict] = None, description: bool 
 
 def load_monthly_flood(daily_source='GAGE_MEAN',
                        agg_funcs=None,
-                       description: bool = True) -> pd.DataFrame:
+                       description: bool = False) -> pd.DataFrame:
     """
     User can choose what kind of daily info to aggregate to get the monthly data
     default choice is daily mean. In other words we get monthly max, min, and mean
@@ -153,7 +155,7 @@ def load_monthly_flood(daily_source='GAGE_MEAN',
     return monthly_flood
 
 
-def load_monthly_flood_and_rain(description: bool = True) -> pd.DataFrame:
+def load_monthly_flood_and_rain(description: bool = False) -> pd.DataFrame:
     description_for_flood_and_rain = """
     * This is the data for rainfall amount (inch) and gage level (feet) combined during
     2015. The data is obtained by aggregating the daily records. Several ways of aggregations are
@@ -192,7 +194,7 @@ def load_monthly_flood_and_rain(description: bool = True) -> pd.DataFrame:
     return output[columns_kept]
 
 
-def load_daily_flood_and_rain(description: bool = True):
+def load_daily_flood_and_rain(description: bool = False):
     """
     This is the flood and rainfall data in South Carolina (daily)
     """
@@ -207,11 +209,11 @@ def load_daily_flood_and_rain(description: bool = True):
     if description:
         print(description_for_flood_and_rain)
 
-    locations_in_flood = load_daily_flood(description=False)[['LAT', 'LON']].drop_duplicates()
+    locations_in_flood = load_daily_flood()[['LAT', 'LON']].drop_duplicates()
     locations_in_flood['LAT'] = locations_in_flood['LAT'].astype(float)
     locations_in_flood['LON'] = locations_in_flood['LON'].astype(float)
 
-    locations_in_rain = load_daily_rain(load_descriptions=False)[['LAT', 'LON']].drop_duplicates()
+    locations_in_rain = load_daily_rain()[['LAT', 'LON']].drop_duplicates()
     locations_in_rain['LAT'] = locations_in_rain['LAT'].astype(float)
     locations_in_rain['LON'] = locations_in_rain['LON'].astype(float)
 
@@ -223,7 +225,7 @@ def load_daily_flood_and_rain(description: bool = True):
     combined_rain_and_flood = pd.concat([locations_in_flood, relevant_rain_fall_stations], axis=1)
     combined_rain_and_flood.columns = ['LAT_GAGE', 'LON_GAGE', 'LAT_PRCP', 'LON_PRCP']
 
-    all_flood_data = load_daily_flood(description=False)
+    all_flood_data = load_daily_flood()
     all_flood_data['LAT'] = all_flood_data['LAT'].astype(float)
     all_flood_data['LON'] = all_flood_data['LON'].astype(float)
 
@@ -233,7 +235,7 @@ def load_daily_flood_and_rain(description: bool = True):
                                     right_on=['LAT_GAGE', 'LON_GAGE'],
                                     how='left')
 
-    all_rain = load_daily_rain(load_descriptions=False)
+    all_rain = load_daily_rain()
     all_rain['LAT'] = all_rain['LAT'].astype(float)
     all_rain['LON'] = all_rain['LON'].astype(float)
     all_rain['DATE'] = pd.to_datetime(all_rain.DATE)
@@ -246,4 +248,42 @@ def load_daily_flood_and_rain(description: bool = True):
     output = output[['SITENUMBER', 'STATION_NAME', 'LAT_GAGE', 'LON_GAGE', 'LAT_PRCP', 'LON_PRCP',
                      'STATE', 'DATE', 'GAGE_MAX', 'GAGE_MIN', 'GAGE_MEAN', 'PRCP']]
     return output
+
+
+def load_daily_sst(description: bool = False):
+    if description:
+        description_for_sst = """
+        * NOAA High-resolution Blended Analysis of Daily SST. Data is from Sep 1981
+        and is on a 1/4 deg global grid.
+        * you can set 'load_descriptions=false' if you do not wish to see this intro next time.
+        """
+        print(description_for_sst)
+    return pd.read_parquet(daily_sst_dir)
+
+
+def load_monthly_sst(description: bool = False):
+    if description:
+        description_for_sst = """
+        * NOAA High-resolution Blended Analysis of Daily SST. Data is from Sep 1981
+        and is on a 1/4 deg global grid.
+        * this is monthly sst data by aggregating the daily records and finding the mean
+        max, min and sum.
+        * you can set 'load_descriptions=false' if you do not wish to see this intro next time.
+        """
+        print(description_for_sst)
+
+    daily_sst = load_daily_sst()
+    ref_table = daily_sst[['LAT', 'LON']]
+
+    monthly_sst = convert_daily_to_monthly(df=daily_sst,
+                                           coordinate_x='LAT',
+                                           coordinate_y='LON',
+                                           date_col='DATE',
+                                           value_col='SST',
+                                           agg_funcs=None)
+    monthly_sst = pd.merge(left=monthly_sst,
+                           right=ref_table,
+                           how='inner',
+                           on=['LAT', 'LON'])
+    return monthly_sst
 
