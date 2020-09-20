@@ -4,7 +4,6 @@ import re
 import shutil
 import tarfile
 import tempfile
-import warnings
 from functools import cached_property
 from typing import List, Union, Tuple
 
@@ -12,6 +11,7 @@ import geopandas as gpd
 import pandas as pd
 import requests
 from scipy.spatial import KDTree
+from tqdm import tqdm
 
 from ..data.util import get_lat_lon_from_string
 
@@ -153,18 +153,24 @@ class RainDataDownloader:
         Since the raw file is a tar file, and we will extract it.
         After processing, this method will return a status boolean, and directory of extracted files.
         """
-        request_sent = requests.get(web_url)
+        request_sent = requests.get(web_url, stream=True)
+        total_size = int(request_sent.headers.get('content-length', 0))
+        block_size = 2014
+        progress_bar = tqdm(total=total_size, unit='B', unit_scale=True)
+
         if not request_sent.ok:
-            warnings.warn(f'the status code is {request_sent.status_code}')
+            logger.critical(f'the status code is {request_sent.status_code}')
             if request_sent.status_code == 404:
-                warnings.warn(f'the data you request might not be available. Possible reason: too old or too new.')
+                logger.critical(f'the data you request might not be available. Possible reason: too old or too new.')
             return False, ''
         try:
-            downloaded_content = request_sent.content
             with open(local_dir, 'wb') as f:
-                f.write(downloaded_content)
+                for data in request_sent.iter_content(chunk_size=block_size):
+                    progress_bar.update(len(data))
+                    f.write(data)
                 dir_, fname = os.path.split(local_dir)
                 target_folder_name, *_ = re.findall(r'\d{8}', fname)  # 8-number, should be date
+            progress_bar.close()
             with tarfile.open(local_dir) as tar:
                 tar.extractall(os.path.join(dir_, target_folder_name))
 
@@ -239,7 +245,7 @@ class RainDataDownloader:
             is_success, folder_name = self.download_and_extract(link, target_dir)
             if self.verbose:
                 logger.critical(
-                    f'Try #: {tries + 1}: started downloading for {len(self.locations_to_download)} location(s)')
+                    f'Try #: {tries + 1}: started downloading for {link}')
                 tries = tries + 1
         if is_success:
             self.convert_downloaded_binary_to_csv(folder_name)
