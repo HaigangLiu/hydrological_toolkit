@@ -14,7 +14,7 @@ import requests
 from shapely.geometry import shape, MultiPolygon
 import shapely.ops
 from scipy.spatial import distance_matrix
-import tqdm
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
