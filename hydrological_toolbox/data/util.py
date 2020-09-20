@@ -6,6 +6,7 @@ from pkg_resources import resource_filename
 from functools import cached_property
 
 from pandas import date_range, DataFrame, concat, merge, read_parquet
+import pyproj
 import numpy as np
 import fiona
 from geopy.geocoders import Nominatim
@@ -13,7 +14,7 @@ import requests
 from shapely.geometry import shape, MultiPolygon
 import shapely.ops
 from scipy.spatial import distance_matrix
-import pyproj
+import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -543,6 +544,18 @@ def get_x_y_projections(locations, mapping=None):
     tree = KDTree(mapping[['lat', 'lon']])
     list_of_distances, list_of_indices = tree.query(locations)
     return mapping.iloc[list_of_indices]
+
+
+class DownloadProgressBar(tqdm):
+    """
+    this is for the progress bar
+    """
+    def update_to(self, b=1, bsize=1, tsize=None):
+        if tsize is not None:
+            self.total = tsize
+        self.update(b * bsize - self.n)
+
+
 # user can call this function directly without interacting explicitly
 # with initiating the class
 # generate_grid = GridMaker()
