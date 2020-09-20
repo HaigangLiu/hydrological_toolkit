@@ -1,19 +1,20 @@
 import json
-from scipy.spatial import KDTree
-from typing import List, Union
 import logging
-from pkg_resources import resource_filename
+from collections import defaultdict
 from functools import cached_property
+from typing import List, Union
 
-from pandas import date_range, DataFrame, concat, merge, read_parquet
-import pyproj
-import numpy as np
 import fiona
-from geopy.geocoders import Nominatim
+import numpy as np
+import pyproj
 import requests
-from shapely.geometry import shape, MultiPolygon
 import shapely.ops
+from geopy.geocoders import Nominatim
+from pandas import DataFrame, concat, merge, read_parquet
+from pkg_resources import resource_filename
+from scipy.spatial import KDTree
 from scipy.spatial import distance_matrix
+from shapely.geometry import shape, MultiPolygon
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -21,10 +22,12 @@ logger = logging.getLogger(__name__)
 # try to collect all asset files in one place
 states_name_and_patch_json = resource_filename('hydrological_toolbox.hydrological_toolbox', 'asset/state_names.json')
 state_patches = resource_filename('hydrological_toolbox.hydrological_toolbox', 'asset/state_boundaries.json')
-state_index_in_json = resource_filename('hydrological_toolbox.hydrological_toolbox', 'asset/mapping_state_to_contour_index.json')
+state_index_in_json = resource_filename('hydrological_toolbox.hydrological_toolbox',
+                                        'asset/mapping_state_to_contour_index.json')
 state_contours = resource_filename('hydrological_toolbox.hydrological_toolbox', 'asset/state_shape')
-nws_locations_nation_wide = resource_filename('hydrological_toolbox.hydrological_toolbox', 'asset/new_rain_mapping.parquet')
-
+nws_locations_nation_wide = resource_filename('hydrological_toolbox.hydrological_toolbox',
+                                              'asset/new_rain_mapping.parquet')
+hydrological_code_details = resource_filename('hydrological_toolbox.hydrological_toolbox', 'asset/pmcodes')
 
 def convert_coordinates(df: DataFrame,
                         lat: str = 'LAT',
@@ -102,39 +105,6 @@ def get_state_contours(state_acronym: str, lat_first: bool = False) -> MultiPoly
     else:
         logger.critical(f'by default the longitude comes first, one can flip it by setting flip_lat_lon=True')
     return state_contour
-
-
-def get_in_between_dates(start_date: str, end_date: str) -> List:
-    """
-    The input and output are consistent. If start date and end date are both '1900-01-01' the output would also
-    be in days. Otherwise, if it is like '1990-01' then the output will be month.
-
-    >>> get_in_between_dates('1990-01-01', '1990-01-03')
-    ['1990-01-01', '1990-01-02', '1990-01-03']
-    >>> get_in_between_dates('1990-01', '1990-03')
-    ['1990-01', '1990-02', '1990-03']
-    >>> get_in_between_dates('1990-01', '1990-01-20')
-    Traceback (most recent call last):
-        ...
-    ValueError: the start date and end date should be of equal length
-    """
-    if not isinstance(start_date, str) or not isinstance(end_date, str):
-        raise TypeError('both start date and input have to be of string type')
-
-    if len(start_date) != len(end_date):
-        raise ValueError('the start date and end date should be of the same format and the same length')
-
-    if len(start_date) == 7:  # monthly
-        # MS means month start to make sure the interval we get is both inclusive
-        list_of_dates = date_range(start_date, end_date, freq='MS').to_list()
-        return [str(time_stamp)[0:7] for time_stamp in list_of_dates]
-
-    elif len(start_date) == 10:  # daily
-        list_of_dates = date_range(start_date, end_date, freq='D').to_list()
-        return [str(time_stamp)[0:10] for time_stamp in list_of_dates]
-
-    else:
-        raise ValueError('only accept format like 1990-01-01 or 1990-01.')
 
 
 def get_state_patch(state_acronym):
@@ -525,9 +495,15 @@ class SiteInfoDownloader:
         return site_info
 
 
+# user can call this function directly without interacting explicitly
+# with initiating the class
+generate_grid = GridMaker()
+
+
 def get_site_info(site):
     """
-    if you got a site number, this function can help you to get the latitude, longitude and description of that site
+    if you got a site number, this function can help you to get the latitude,
+    longitude and description of that site
     the input could be either a site number or a list of site number
     """
     if isinstance(site, str):
@@ -539,8 +515,20 @@ def get_site_info(site):
 
 
 def get_x_y_projections(locations, mapping=None):
+    """
+    Explanation:
+    * In the USGS database, there is another way to index all locations, which
+    labels all US locations in HRAPX and HRAPY. Both columns are of integer type,
+    and uniquely identifies a locations.
+    * Thus, when we prefer HRAPX and HRAPY when performing the joining.
+    * This function takes lat lon input, find the closest observation locations,
+    and return the HRAPX and HRAPY label for these locations in a dataframe.
+
+    :param locations: a dataframe with location information
+    :param mapping: mapping config. will load a parquet file if none
+    """
     if not mapping:
-        mapping = read_parquet('../asset/new_rain_mapping.parquet')
+        mapping = read_parquet(nws_locations_nation_wide)
     tree = KDTree(mapping[['lat', 'lon']])
     list_of_distances, list_of_indices = tree.query(locations)
     return mapping.iloc[list_of_indices]
@@ -556,6 +544,31 @@ class DownloadProgressBar(tqdm):
         self.update(b * bsize - self.n)
 
 
-# user can call this function directly without interacting explicitly
-# with initiating the class
-# generate_grid = GridMaker()
+def find_hydrological_variable_by_keyword(phrase: str) -> DataFrame:
+    """
+    user can provide keywords and this function returns
+    all variables whose descriptions contains that keyword.
+    :param phrase: variable names to look up
+    """
+    code_to_station_info = defaultdict(dict)
+    for line in open(hydrological_code_details):
+        entries_for_one_code = line.split('\t')
+        code, group, description, casrn_code, srsname, unit = entries_for_one_code
+        code_to_station_info[code] = {'GROUP': group,
+                                      'DESCRIPTION': description,
+                                      'CASRN': casrn_code,
+                                      'SRSNAME': srsname,
+                                      'UNIT': unit.strip('\n')}
+
+    description_to_code = {v['DESCRIPTION'].lower(): k for k, v in code_to_station_info.items()}
+    stations_found = []
+    phrase = phrase.lower()
+    all_descriptions = list(description_to_code.keys())
+
+    for description in all_descriptions:
+        if phrase in description:
+            station_info = code_to_station_info[description_to_code[description]]
+            code = description_to_code[description]
+            station_info.update({'code': code})
+            stations_found.append(station_info)
+    return DataFrame(stations_found)
