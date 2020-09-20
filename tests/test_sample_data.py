@@ -50,3 +50,19 @@ def test_load_daily_rain_and_flood():
     assert 'PRCP' in df and 'GAGE_MAX' in df
     assert 'LAT_GAGE' in df and 'LON_GAGE' in df and 'LAT_PRCP' in df and 'LON_PRCP' in df
     assert 'DATE' in df
+
+
+def test_load_sst_daily():
+    df = sample_data.load_daily_sst()
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) > 0
+    assert 'SST' in df and 'LAT' in df and 'LON' in df
+
+
+def test_load_sst_monthly():
+    df = sample_data.load_monthly_sst()
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) > 0
+    assert df.MONTH.max() == 12
+    assert 'SST_MEAN' in df and 'SST_MAX' in df
+    assert 'SST_MIN' in df and 'SST_SUM' in df
