@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from math import copysign, floor
 import gzip
 import logging
+import os
 import shutil
 import struct
-import os
-from typing import Union
 import tempfile
 from functools import cached_property
+from math import copysign, floor
+from typing import Union
 
-import requests
 import numpy as np
 import pandas as pd
+import requests
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -145,19 +146,25 @@ class AltitudeDownloader:
 
     def download_link(self, link: str) -> None:
         *_, temp_name = link.split('/')
-        logger.critical(f'start downloading from {link}')
-        request_sent = requests.get(link)
+        logger.info(f'start downloading from {link}')
+        response = requests.get(link)
+        total_size = int(response.headers.get('content-length', 0))
+        block_size = 2014
+        progress_bar = tqdm(total=total_size, unit='B', unit_scale=True)
 
-        if request_sent.status_code != 200:
+        if response.status_code != 200:
             return None
 
         with open(os.path.join(self.local_dir, temp_name), 'wb') as writer:
-            writer.write(request_sent.content)
+            for data in response.iter_content(chunk_size=block_size):
+                progress_bar.update(len(data))
+                writer.write(data)
+        progress_bar.close()
         # unzip the file
         with gzip.open(os.path.join(self.local_dir, temp_name), 'rb') as f_in:
             with open(os.path.join(self.local_dir, temp_name.replace('.gz', '')), 'wb') as f_out:
                 shutil.copyfileobj(f_in, f_out)
-        logger.critical(f"file has been saved to {temp_name.replace('.gz', '')} at {os.path.join(self.local_dir, temp_name)}")
+        logger.info(f"file has been saved to {temp_name.replace('.gz', '')} at {os.path.join(self.local_dir, temp_name)}")
 
     @staticmethod
     def _convert_to_minutes_and_seconds(lat_or_lon_in_decimal_points: float):
