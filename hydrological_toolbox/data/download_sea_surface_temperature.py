@@ -1,81 +1,59 @@
-from contextlib import closing
-from datetime import date, timedelta, datetime
 import logging
 import os
-import shutil
-from typing import Union
-import urllib.request as request
 import tempfile
+import urllib.request as request
+import warnings
+from datetime import date, timedelta
+from functools import cached_property
+from typing import Union
 
-from netCDF4 import Dataset
 import numpy as np
 import pandas as pd
+from netCDF4 import Dataset
 from scipy.spatial import KDTree
 
-from data.util import convert_coordinates
+from ..data.util import DownloadProgressBar
+
 logger = logging.getLogger(__name__)
 
 
 class SeaSurfaceTempDownloader:
     """
-    downloading monthly sst data from noaa database
+    NOAA High-resolution Blended Analysis of Daily SST. Data is
+    from Sep 1981 and is on a 1/4 deg global grid.
     """
+
     def __init__(self,
                  locations: pd.DataFrame,
                  start_date: str,
                  end_date: str,
-                 lat_col: str,
-                 lon_col: str,
-                 n_neighbors=5):
+                 lat_col: str = 'LAT',
+                 lon_col: str = 'LON'):
         """
         Download the sea surface temperature (SST) data from NOAA.
-        If coordinates are provided: one of two things will happen:
-        (1) if the coordinates are on the land, we will find the nearest the sea points
-        and report the weighted average of them.
-        (2) if the coordinates are in the sea, we will report the value of SST.
+        If the land coordinates are given, np.nan values will be returned in the dataframe
         """
-        # mask is the layer that tells land from sea
-        sst_data_url = 'ftp://ftp.cdc.noaa.gov/Datasets/noaa.oisst.v2/sst.mnmean.nc'
-        sst_mask_url = 'ftp://ftp.cdc.noaa.gov/Datasets/noaa.oisst.v2/lsmask.nc'
-
+        self.sst_data_parent_dir = 'ftp://ftp.cdc.noaa.gov/Datasets/noaa.oisst.v2.highres/'
         self.temp_dir = tempfile.mkdtemp()
-        sst_data_dir = os.path.join(self.temp_dir, 'sst_data.nc')
-        sst_mask_dir = os.path.join(self.temp_dir, 'sst_mask.nc')
 
-        self._locations = locations
-        self.start_year, self.start_month, self.start_day = self._input_parser(start_date)
-        self.end_year, self.end_month, self.end_day = self._input_parser(end_date)
-        self.start_date = date(*self._input_parser(start_date, type_required='int'))
-        self.end_date = date(*self._input_parser(end_date, type_required='int'))
+        try:
+            self.locations = locations[[lat_col, lon_col]]
+        except KeyError:
+            logger.critical(f'{lat_col} and {lon_col} are both needed')
+            raise
 
-        self._locations = locations
-        self.dataset = self.prepare_dataset(data_in=sst_data_url,
-                                            data_out=sst_data_dir,
-                                            mask_in=sst_mask_url,
-                                            mask_out=sst_mask_dir)
-        self.n_neighbors = n_neighbors
-        self.lat_col = lat_col
-        self.lon_col = lon_col
-
-    @property
-    def locations(self):
-        if not isinstance(self._locations, pd.DataFrame):
-            raise TypeError('only data frame objects are accepted')
-
-        if self.lat_col not in self._locations:
-            raise KeyError(f'{self.lat_col} is not in the input data frame')
-
-        if self.lon_col not in self._locations:
-            raise KeyError(f'{self.lon_col} is not in the input dataframe')
-
-        return self._locations
+        self.start_date = start_date
+        self.end_date = end_date
 
     @classmethod
     def from_tuples(cls,
                     locations: Union[tuple, list],
                     start_date: str,
-                    end_date: str,
-                    n_neighbors=5):
+                    end_date: str):
+        """
+        alternative constructor allows users to initialize the class from a list/tuple
+        of coordinates.
+        """
 
         location_peek = locations[0]
         if isinstance(location_peek, tuple) or isinstance(location_peek, list):
@@ -92,146 +70,170 @@ class SeaSurfaceTempDownloader:
                    start_date=start_date,
                    end_date=end_date,
                    lat_col='LAT',
-                   lon_col='LON',
-                   n_neighbors=n_neighbors)
+                   lon_col='LON')
 
     @staticmethod
-    def _input_parser(string_date, type_required='int'):
+    def read_dataset(local_data_dir):
         """
-        parse year, month and day from the input
+        convert the netCDF dataset into a dictionary
+
+        we also use variable['lat'][:] to convert values to numpy type
+        because doing this speed the slicing up significantly
         """
-        if '-' in string_date:
-            string_date_ = string_date.split('-')
-            if len(string_date_) == 3:
-                year, month, day = string_date_
-            elif len(string_date_) == 2:
-                year, month = string_date_
-                day = '01'
-            else:
-                raise ValueError('only accept string formats like 1990-09 or 1990-09-09')
-            if type_required == 'int':
-                return int(year), int(month), int(day)
-            else:
-                return year, month, day
-        else:
-            raise ValueError('no dash in date format. '
-                             'However, we only accept formats like 1990-09 or 1990-09-09')
-
-    @staticmethod
-    def prepare_dataset(data_in, data_out, mask_in, mask_out):
-        def _trigger_download(url_in, local_dir_out):
-            logger.critical(f'start downloading from {url_in}')
-            with closing(request.urlopen(url=url_in)) as reader:
-                with open(local_dir_out, 'wb') as writer:
-                    shutil.copyfileobj(reader, writer)
-            logger.critical(f'downloading is done. And the file has been saved to {local_dir_out}')
-
-        if os.path.exists(data_out):
-            logger.critical(f'the file {data_out} already exists. Skip downloading')
-        else:
-            _trigger_download(data_in, data_out)
-
-        if os.path.exists(mask_out):
-            logger.critical(f'the file {mask_out} already exists. Skip downloading')
-        else:
-            _trigger_download(mask_in, mask_out)
-
-        sst_data = Dataset(data_out, mode='r')
-        sst_mask = Dataset(mask_out, mode='r')
-        sst_mask = np.array(sst_mask['mask'][0].data, dtype=np.bool)
-
-        lat = sst_data.variables['lat'][:]
+        sst_data = Dataset(local_data_dir, mode='r')
+        lat = sst_data.variables['lat'][:]  # this makes it an np array; faster than original type
         lon = sst_data.variables['lon'][:]
         sst = sst_data.variables['sst'][:]
         time = sst_data.variables['time'][:]
         lon = np.array([term if term <= 180 else (term - 360) for term in lon])
+        return {'lat': lat,
+                'lon': lon,
+                'time': time,
+                'sst': sst}
 
-        return {'dataset': sst_data, 'mask': sst_mask, 'lat': lat,
-                'lon': lon, 'time': time, 'sst': sst}
-
-    @property
-    def time_index(self):
+    def get_lat_lon_index(self, lat, lon):
         """
-        the raw data stores time in "seconds after year 1800". Hence, we translate the user-friendly input
-        to this format
+        A helper function to get the lat and lon index of the sst data,
+        which will be later used for slicing.
+
+        Background info:
+        The sst data could be sliced as sst[correct_date, correct_lat, correct_lon]
+        We will find out the *index* of the closet locations provided by the
+        user.
         """
-        timeline = self.dataset['time']
-        converted_dates = {date(1800, 1, 1) + timedelta(int(t)): i for i, t in enumerate(timeline)}
 
-        all_dates_in_between = pd.date_range(start=self.start_date, end=self.end_date)
-        date_dict = {d: converted_dates.get(date(d.year, d.month, d.day), None) for d in all_dates_in_between}
-        date_dict_ = {k: v for k, v in date_dict.items() if v is not None}
+        def build_2d_meshgrid(lat, lon):
+            xx, yy = np.meshgrid(lat, lon)
+            xx = xx.reshape(-1)
+            yy = yy.reshape(-1)
+            return np.array([xx, yy]).T
 
-        if date_dict_:
-            return date_dict_
-        else:
-            raise ValueError('Failed to find the time index corresponding '
-                             'to the time you provided. '
-                             'The database has only monthly data from 1981')
+        lat_idx = np.array(range(len(lat)))
+        lon_idx = np.array(range(len(lon)))
 
-    def download_one_month(self, time_index):
-        # noland！should be around 70% percent of original data
-        base = self.locations.copy()
+        lat_lon_matrix = build_2d_meshgrid(lat, lon)
+        lat_lon_idx_matrix = build_2d_meshgrid(lat_idx, lon_idx)
 
-        sst_df_sea_only = pd.DataFrame(self.dataset['sst'].data[time_index, :, :])
-        sst_df_sea_only.index = self.dataset['lat']
-        sst_df_sea_only.columns = self.dataset['lon']
+        tree = KDTree(lat_lon_matrix)
+        dist, idx = tree.query(self.locations)
 
-        sst_df_sea_only_ = sst_df_sea_only.stack().reset_index()
-        sst_df_sea_only_.columns = ['LAT', 'LON', 'SST']
+        locations_in_original_data = lat_lon_idx_matrix[idx]
+        lat_idx = locations_in_original_data[:, 0]
+        lon_idx = locations_in_original_data[:, 1]
+        return lat_idx, lon_idx
 
-        cartesian_coord_trees = convert_coordinates(sst_df_sea_only_)
-        tree = KDTree(cartesian_coord_trees.values)
-        cartesian_coord_query = convert_coordinates(self.locations)
-        distances, idx = tree.query(cartesian_coord_query.values, k=self.n_neighbors)
+    def get_time_index(self, dataset, list_of_regular_time):
+        """
+        convert the user provide time such as 2010-01-01 to 2010-10-01 into dates in seconds.
+        """
+        timeline = dataset['time']
+        regular_time_to_index = {str(date(1800, 1, 1) + timedelta(int(t))): i for i, t in enumerate(timeline)}
 
-        sst_list = []
-        for i in range(len(self.locations)):
-            sst_list.append(sst_df_sea_only_.iloc[idx[i]].mean().SST)
-        base['SST'] = sst_list
-        return base
+        time_index_list = []  # used for slicing later in the sst data
+        for regular_time in list_of_regular_time:
+            regular_time = str(regular_time).split(' ')[0]  # 1985-01-01 00:00:00
+            time_index_list.append(regular_time_to_index[regular_time])
+        return time_index_list
+
+    @cached_property
+    def remote_to_local_dir_mapping(self):
+        """
+        since all observations in one year are stored in the same file, we only have to determine how many years
+        total to be downloaded
+        based off this we get the {remote_url: (local_dir, dates_in_that_year)} mapping
+        """
+        from collections import defaultdict
+        year_to_timestamp = defaultdict(list)
+        for time_stamp in pd.date_range(self.start_date, self.end_date):
+            year_to_timestamp[time_stamp.year].append(time_stamp)
+
+        remote_to_local = defaultdict(list)
+        for year in year_to_timestamp:
+            local_dir = os.path.join(self.temp_dir, f'sst.day.mean.{year}.nc')
+            remote_url = self.sst_data_parent_dir + f'sst.day.mean.{year}.nc'
+            remote_to_local[remote_url].append([local_dir, year_to_timestamp[year]])
+        return remote_to_local
+
+    @staticmethod
+    def download_to_local(link_in, dir_out):
+        """
+        download the sst information to local dir.
+        :param link_in: the url pointing to the file to be downloaded
+        :param dir_out: the local dir where the file is stored
+        """
+        if not os.path.exists(dir_out):
+            with DownloadProgressBar(unit='B', unit_scale=True, miniters=1, desc=link_in.split('/')[-1]) as t:
+                request.urlretrieve(link_in, dir_out, t.update_to)
 
     def download(self):
-        snapshots = []
-        for date_name, index_on_timeline in self.time_index.items():
-            self.dataset['sst'].data[index_on_timeline, :, :][~self.dataset['mask']] = np.nan
-            df_single_month = self.download_one_month(index_on_timeline)
-            df_single_month['MONTH'] = date_name.month
-            df_single_month['YEAR'] = date_name.year
-            snapshots.append(df_single_month)
+        """
+        Note:
+        this is how we want to reformat the file
+        day1 lat1 lon1 sst1
+        day1 lat2 lon2 sst2
+        day1 lat3 lon3 sst3
+        day2 lat1 lon1 sst4
+        day2 lat2 lon2 sst5
+        day2 lat3 lon3 sst6
 
-        output = pd.concat(snapshots, ignore_index=True)
-        os.remove(os.path.join(self.temp_dir, 'sst_data.nc'))
-        os.remove(os.path.join(self.temp_dir, 'sst_mask.nc'))
+        that's why use np.repeat for dates
+        """
+        result = []
+        for year_count, (url, bundle) in enumerate(self.remote_to_local_dir_mapping.items()):
+            local_dir, all_dates_in_that_year = bundle[0]
+            logger.critical('-' * 10 + 'start downloading' + f' year #{year_count + 1}' + '-' * 10)
+            self.download_to_local(url, local_dir)
+            logger.critical('-' * 10 + 'finished downloading' + f' year #{year_count + 1}' + '-' * 10)
+            dataset = self.read_dataset(local_dir)
+
+            time_index = self.get_time_index(dataset=dataset, list_of_regular_time=all_dates_in_that_year)
+            lat_index, lon_index = self.get_lat_lon_index(lat=dataset['lat'], lon=dataset['lon'])
+
+            time_index_stretched_to_match_dim = np.repeat(time_index, len(lat_index))
+            lat_index_stretched_to_match_dim = np.tile(lat_index, len(time_index))
+            lon_index_stretched_to_match_dim = np.tile(lon_index, len(time_index))
+
+            sst = dataset['sst'][time_index_stretched_to_match_dim,
+                                 lat_index_stretched_to_match_dim,
+                                 lon_index_stretched_to_match_dim]
+
+            # get real value (not index) to prepare for the output dataframe
+            lat = dataset['lat'][lat_index_stretched_to_match_dim]
+            lon = dataset['lon'][lon_index_stretched_to_match_dim]
+
+            data = np.array([np.repeat(all_dates_in_that_year, len(lat_index)), lat, lon, sst]).T
+            df = pd.DataFrame(data, columns=['DATE', 'LAT', 'LON', 'SST'])
+            result.append(df)
+
+        # check if all is none, will raise a warning if so
+        output = pd.concat(result).reset_index(drop=True)
+
+        null_values = output['SST'].isnull().sum()
+        if null_values == len(output):
+            warnings.warn('all the sst measurements are null values'
+                          'this is usually because the locations you provided are on the land')
+        # missing data are marked as -9.96921e+36, we convert them to np.nan
+        output.loc[output['SST'] < -9e35, 'SST'] = np.nan
         return output
 
 
-def download_sst(start_date, end_date, locations, lat='LAT', lon='LON'):
+def download_sst(locations, start_date, end_date):
     if isinstance(locations, pd.DataFrame):
-        if lat not in locations or lon not in locations:
-            raise ValueError(f'the dataframe does not a LAT column or a LON columns')
-        return SeaSurfaceTempDownloader(locations=locations,
-                                        lat_col=lat,
-                                        lon_col=lon,
-                                        start_date=start_date,
-                                        end_date=end_date).download()
-
-    elif isinstance(locations, list) or isinstance(locations, tuple):
-        return SeaSurfaceTempDownloader.from_tuples(locations=locations,
-                                                    start_date=start_date,
-                                                    end_date=end_date).download()
+        downloader = SeaSurfaceTempDownloader(locations=locations,
+                                              start_date=start_date,
+                                              end_date=end_date)
+    elif isinstance(locations, (tuple, list)):
+        downloader = SeaSurfaceTempDownloader.from_tuples(locations=locations,
+                                                          start_date=start_date,
+                                                          end_date=end_date)
+    elif isinstance(locations, str) and len(locations) == 2:
+        raise TypeError('we do not support state abbreviation when downloading sst,'
+                        'since such data are only available on the sea.')
+    elif isinstance(locations, str) and len(locations) > 2:
+        raise TypeError('we do not support address as input when downloading sst,'
+                        'since such data are only available on the sea')
     else:
-        raise TypeError('the input of location can only be one the three: dataframe, list, tuple')
+        raise TypeError('only list of coordinates or datframes are supported')
 
+    return downloader.download()
 
-download_sea_surface_temperature = download_sst
-
-
-if __name__ == '__main__':
-    import pkg_resources
-    daily_flood_file = pkg_resources.resource_stream('asset.sample_data_sc', 'GAGE-20110101-20161231-SC.parquet')
-    daily_flood = pd.read_parquet(daily_flood_file)
-    locations_ = daily_flood[['LAT', 'LON']].drop_duplicates().reset_index(drop=True)
-    test_tuple = [10, 10]
-    test_1 = download_sst(locations=locations_, lat='LAT', lon='LON', start_date='2014-01', end_date='2015-01')
-    test_2 = download_sst(locations=test_tuple, start_date='2014-01', end_date='2015-01')
