@@ -264,9 +264,6 @@ class RainDataDownloader:
                 result = process_executor.starmap_async(self.download_controller, self.links_download_and_store)
                 while not result.ready():
                     result.wait(timeout=0.5)
-        # elif not single_thread:
-        #     with Pool(cpu_count()) as process_executor:
-        #         process_executor.starmap(self.download_controller, self.links_download_and_store)
         else:
             for web_url, local_dir in self.links_download_and_store:
                 self.download_controller(link=web_url, target_dir=local_dir)
@@ -294,7 +291,7 @@ class RainDataDownloader:
         return output
 
 
-def download_rainfall(start_date, end_date, location, **kwargs):
+def download_rainfall(start_date, end_date, location, verbose=True, **kwargs):
     """
     handles different types of input differently.
     """
@@ -302,6 +299,7 @@ def download_rainfall(start_date, end_date, location, **kwargs):
         logger.critical(f'start downloading rainfall in state {location}')
         return RainDataDownloader.from_state_name(start_date=start_date,
                                                   end_date=end_date,
+                                                  verbose=verbose,
                                                   state_name=location).download()
 
     elif isinstance(location, str) and len(location) > 2:
@@ -313,11 +311,15 @@ def download_rainfall(start_date, end_date, location, **kwargs):
 
         return RainDataDownloader(start_date=start_date,
                                   end_date=end_date,
+                                  verbose=verbose,
                                   locations=[[lat, lon]]) \
             .download(single_thread=True)
 
     elif isinstance(location, list):
-        return RainDataDownloader(start_date=start_date, end_date=end_date, locations=location).download()
+        return RainDataDownloader(start_date=start_date,
+                                  end_date=end_date,
+                                  verbose=verbose,
+                                  locations=location).download()
 
     elif isinstance(location, pd.DataFrame):
 
@@ -330,7 +332,7 @@ def download_rainfall(start_date, end_date, location, **kwargs):
                 raise KeyError('dataframe must have a LAT column and a LON column')
         return RainDataDownloader(start_date=start_date,
                                   end_date=end_date,
+                                  verbose=verbose,
                                   locations=locations_).download()
     else:
         raise TypeError('the input can only be either string or a list of coordinates or a dataframe')
-
