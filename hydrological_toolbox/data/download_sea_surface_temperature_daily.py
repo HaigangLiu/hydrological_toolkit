@@ -1,26 +1,28 @@
-from contextlib import closing
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
+from functools import cached_property
 import logging
 import os
-import shutil
 from typing import Union
 import urllib.request as request
 import tempfile
+import warnings
 
 from netCDF4 import Dataset
 import numpy as np
 import pandas as pd
 from scipy.spatial import KDTree
-from functools import cached_property
+
+from ..data.util import DownloadProgressBar
 
 logger = logging.getLogger(__name__)
 
 
 class SeaSurfaceTempDownloader:
     """
-    NOAA High-resolution Blended Analysis of Daily SST and Ice. Data is
+    NOAA High-resolution Blended Analysis of Daily SST. Data is
     from Sep 1981 and is on a 1/4 deg global grid.
     """
+
     def __init__(self,
                  locations: pd.DataFrame,
                  start_date: str,
@@ -29,10 +31,7 @@ class SeaSurfaceTempDownloader:
                  lon_col: str = 'LON'):
         """
         Download the sea surface temperature (SST) data from NOAA.
-        If coordinates are provided: one of two things will happen:
-        (1) if the coordinates are on the land, we will find the nearest the sea points
-        and report the weighted average of them.
-        (2) if the coordinates are in the sea, we will report the value of SST.
+        If the land coordinates are given, np.nan values will be returned in the dataframe
         """
         self.sst_data_parent_dir = 'ftp://ftp.cdc.noaa.gov/Datasets/noaa.oisst.v2.highres/'
         self.temp_dir = tempfile.mkdtemp()
@@ -51,6 +50,10 @@ class SeaSurfaceTempDownloader:
                     locations: Union[tuple, list],
                     start_date: str,
                     end_date: str):
+        """
+        alternative constructor allows users to initialize the class from a list/tuple
+        of coordinates.
+        """
 
         location_peek = locations[0]
         if isinstance(location_peek, tuple) or isinstance(location_peek, list):
@@ -71,10 +74,16 @@ class SeaSurfaceTempDownloader:
 
     @staticmethod
     def read_dataset(local_data_dir):
+        """
+        convert the netCDF dataset into a dictionary
+
+        we also use variable['lat'][:] to convert values to numpy type
+        because doing this speed the slicing up significantly
+        """
         sst_data = Dataset(local_data_dir, mode='r')
-        lat = sst_data.variables['lat'][:]
+        lat = sst_data.variables['lat'][:]  # this makes it an np array; faster than original type
         lon = sst_data.variables['lon'][:]
-        sst = sst_data.variables['sst']
+        sst = sst_data.variables['sst'][:]
         time = sst_data.variables['time'][:]
         lon = np.array([term if term <= 180 else (term - 360) for term in lon])
         return {'lat': lat,
@@ -92,6 +101,7 @@ class SeaSurfaceTempDownloader:
         We will find out the *index* of the closet locations provided by the
         user.
         """
+
         def build_2d_meshgrid(lat, lon):
             xx, yy = np.meshgrid(lat, lon)
             xx = xx.reshape(-1)
@@ -152,38 +162,78 @@ class SeaSurfaceTempDownloader:
         :param dir_out: the local dir where the file is stored
         """
         if not os.path.exists(dir_out):
-            with closing(request.urlopen(url=link_in)) as reader:
-                with open(dir_out, 'wb') as writer:
-                    shutil.copyfileobj(reader, writer)
+            with DownloadProgressBar(unit='B', unit_scale=True, miniters=1, desc=link_in.split('/')[-1]) as t:
+                request.urlretrieve(link_in, dir_out, t.update_to)
 
     def download(self):
+        """
+        Note:
+        this is how we want to reformat the file
+        day1 lat1 lon1 sst1
+        day1 lat2 lon2 sst2
+        day1 lat3 lon3 sst3
+        day2 lat1 lon1 sst4
+        day2 lat2 lon2 sst5
+        day2 lat3 lon3 sst6
+
+        that's why use np.repeat for dates
+        """
         result = []
         for year_count, (url, bundle) in enumerate(self.remote_to_local_dir_mapping.items()):
             local_dir, all_dates_in_that_year = bundle[0]
-            logger.critical('-'*10 + 'start downloading' + f' the {year_count + 1}th year' + '-'*10)
+            logger.critical('-' * 10 + 'start downloading' + f' year #{year_count + 1}' + '-' * 10)
             self.download_to_local(url, local_dir)
+            logger.critical('-' * 10 + 'finished downloading' + f' year #{year_count + 1}' + '-' * 10)
             dataset = self.read_dataset(local_dir)
 
             time_index = self.get_time_index(dataset=dataset, list_of_regular_time=all_dates_in_that_year)
             lat_index, lon_index = self.get_lat_lon_index(lat=dataset['lat'], lon=dataset['lon'])
-            sst = dataset['sst'][time_index, lat_index, lon_index]
 
-            # get real value to prepare for the output dataframe
-            lat, lon = dataset['lat'][lat_index], dataset['lon'][lon_index]
-            """
-            this is how we want to reformat the file
-            day1 lat1 lon1 sst1
-            day1 lat2 lon2 sst2
-            day1 lat3 lon3 sst3
-            day2 lat1 lon1 sst4
-            day2 lat2 lon2 sst5
-            day2 lat3 lon3 sst6
-            so the result is actually a cartesian product of time x lat x lon
-            """
-            index = pd.MultiIndex.from_product([all_dates_in_that_year, lat, lon])
-            df = pd.DataFrame({'sst': sst.flatten()}, index=index).reset_index()
-            df.columns = ['DATE', 'LAT', 'LON', 'SST']
+            time_index_stretched_to_match_dim = np.repeat(time_index, len(lat_index))
+            lat_index_stretched_to_match_dim = np.tile(lat_index, len(time_index))
+            lon_index_stretched_to_match_dim = np.tile(lon_index, len(time_index))
+
+            sst = dataset['sst'][time_index_stretched_to_match_dim,
+                                 lat_index_stretched_to_match_dim,
+                                 lon_index_stretched_to_match_dim]
+
+            # get real value (not index) to prepare for the output dataframe
+            lat = dataset['lat'][lat_index_stretched_to_match_dim]
+            lon = dataset['lon'][lon_index_stretched_to_match_dim]
+
+            data = np.array([np.repeat(all_dates_in_that_year, len(lat_index)), lat, lon, sst]).T
+            df = pd.DataFrame(data, columns=['DATE', 'LAT', 'LON', 'SST'])
             result.append(df)
 
-        return pd.concat(result).reset_index(drop=True)
+        # check if all is none, will raise a warning if so
+        output = pd.concat(result).reset_index(drop=True)
+
+        null_values = output['SST'].isnull().sum()
+        if null_values == len(output):
+            warnings.warn('all the sst measurements are null values'
+                          'this is usually because the locations you provided are on the land')
+        # missing data are marked as -9.96921e+36, we convert them to np.nan
+        output.loc[output['SST'] < -9e35, 'SST'] = np.nan
+        return output
+
+
+def download_sst(locations, start_date, end_date):
+    if isinstance(locations, pd.DataFrame):
+        downloader = SeaSurfaceTempDownloader(locations=locations,
+                                              start_date=start_date,
+                                              end_date=end_date)
+    elif isinstance(locations, (tuple, list)):
+        downloader = SeaSurfaceTempDownloader.from_tuples(locations=locations,
+                                                          start_date=start_date,
+                                                          end_date=end_date)
+    elif isinstance(locations, str) and len(locations) == 2:
+        raise TypeError('we do not support state abbreviation when downloading sst,'
+                        'since such data are only available on the sea.')
+    elif isinstance(locations, str) and len(locations) > 2:
+        raise TypeError('we do not support address as input when downloading sst,'
+                        'since such data are only available on the sea')
+    else:
+        raise TypeError('only list of coordinates or datframes are supported')
+
+    return downloader.download()
 
