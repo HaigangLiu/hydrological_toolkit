@@ -1,11 +1,12 @@
 import pandas as pd
+
 from ..hydrological_toolbox.data import download_rain_data
 
 
 def test_download_rain_coordinates():
     entry = download_rain_data.download_rainfall(start_date='2015-10-01',
                                                  end_date='2015-10-07',
-                                                 location='1523 Greene Street Columbia, SC')
+                                                 location=[[34.05, -81.03]])
     assert len(entry) == 7
     assert isinstance(entry, pd.DataFrame)
     assert 'LAT' in entry
