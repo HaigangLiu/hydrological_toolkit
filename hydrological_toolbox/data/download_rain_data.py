@@ -153,19 +153,19 @@ class RainDataDownloader:
         Since the raw file is a tar file, and we will extract it.
         After processing, this method will return a status boolean, and directory of extracted files.
         """
-        request_sent = requests.get(web_url, stream=True)
-        total_size = int(request_sent.headers.get('content-length', 0))
+        response = requests.get(web_url, stream=True)
+        total_size = int(response.headers.get('content-length', 0))
         block_size = 2014
         progress_bar = tqdm(total=total_size, unit='B', unit_scale=True)
 
-        if not request_sent.ok:
-            logger.critical(f'the status code is {request_sent.status_code}')
-            if request_sent.status_code == 404:
+        if not response.ok:
+            logger.critical(f'the status code is {response.status_code}')
+            if response.status_code == 404:
                 logger.critical(f'the data you request might not be available. Possible reason: too old or too new.')
             return False, ''
         try:
             with open(local_dir, 'wb') as f:
-                for data in request_sent.iter_content(chunk_size=block_size):
+                for data in response.iter_content(chunk_size=block_size):
                     progress_bar.update(len(data))
                     f.write(data)
                 dir_, fname = os.path.split(local_dir)
