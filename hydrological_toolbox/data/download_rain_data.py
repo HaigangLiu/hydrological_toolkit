@@ -1,19 +1,19 @@
-from functools import cached_property
 import logging
 import os
 import re
-import requests
-import tarfile
 import shutil
+import tarfile
 import tempfile
-from typing import List, Union, Tuple
 import warnings
+from functools import cached_property
+from typing import List, Union, Tuple
 
 import geopandas as gpd
 import pandas as pd
+import requests
 from scipy.spatial import KDTree
 
-from ..data.util import get_in_between_dates, get_lat_lon_from_string
+from ..data.util import get_lat_lon_from_string
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,11 @@ class RainDataDownloader:
         self._customized_location_list = locations
         self.start_date, self.end_date = start_date, end_date
         self.max_tries = max_tries
-        self.dates_list = get_in_between_dates(self.start_date, self.end_date)
+        self.dates_list = []
+        for date_in_between in pd.date_range(self.start_date, self.end_date):
+            date_in_between, _ = str(date_in_between).split(' ')
+            # the follow steps need a string type as date
+            self.dates_list.append(date_in_between)
         self.links_download_and_store = list(self._generate_links_to_download())
         self.verbose = verbose
 
