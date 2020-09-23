@@ -20,13 +20,12 @@ class HydrologicalDataDownloader:
     "https://waterdata.usgs.gov/nwis/dv?cb_00065=on&format=rdb&site_no=02153051&referred_module=sw&period=&begin_date" \
     "=2017-11-20&end_date=2018-11-20"
 
-    We will first determine which
-        1. Note that there is a site number, we need to go to a different site to grab the site number list
-        2. generate a url for each site with start, end date and the site number
-        3. parse that url, download web page content and clean the data, which are written to a file
-        4. merge all files for all location in that state, with some post processing.
+    We will first determine which site to download:
+        1. if the input type is a state name, we will send a request to USGS to get all available stations
+        2. if the input type is lat lon, we will extend the lat and lon input to a bounding box, and send
+        the bounding box to USGS. And find the closet location, and send it back to the user
+        3. if user input the site number, we will send the site number directly to usgs.
 
-    implementation detail:
     on a high level, no matter what user wants as input (state name or station lat and lon), we have to convert to
     station id for the final query
     """
@@ -44,7 +43,6 @@ class HydrologicalDataDownloader:
         :param station_info: key is the station number and the value is the downloadable url
         :param verbose: print more info about the downloading process
         """
-
         self.SCHEMA = {'SITENUMBER': str,  # make sure it is string since sometimes site number starts with 0
                        'STATION_NAME': str,
                        'LAT': float,
