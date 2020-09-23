@@ -21,10 +21,10 @@ logger = logging.getLogger(__name__)
 class AltitudeDownloader:
     """
     Download the altitude data from SRTM project by NASA.
-    There are three versions based on resolutions and we used the most granular/detailed version (1 arc second)
-    the input can be a tuple/list of (lat, lon) pair. or a batch job like data frame
+    * There are 2 datasets available on resolutions and we the 1 arc second version (most detailed)
+    * the input can be a tuple/list of (lat, lon) pair. or a batch job like data frame
+    * the output is a dataframe with lat lon and altitude info in meters
     """
-
     def __init__(self,
                  locations: pd.DataFrame,
                  lat_col: str = None,
@@ -94,7 +94,7 @@ class AltitudeDownloader:
         return copysign(1, x)
 
     @staticmethod
-    def make_format(lat: float, lon: float):
+    def add_easting_and_northing(lat: float, lon: float):
         """
         assuming the input is in the float format
         translate them into east/west and north/south for later use
@@ -111,17 +111,16 @@ class AltitudeDownloader:
 
     def generate_links_for_downloading(self) -> list:
         """
-        here's the rule: round to the smaller
-        for locations such as (39.6, 29.5) we will refer to the tile indexed by
-        (39, 29). and if it's (-39.6, 29.5), then the logic still follow through,
-        we will look at (-40, 29). Hence, this is exactly what a floor function is
-        for.
+        determine the proper tile to download since the tile is indexed by integer lat lons
+
+        Implementation detail: round to the smaller side -> a floor function
+        example: (39.6, 29.5) -> (39, 29); (-39.6, 29.5) -> (-40, 29).
         """
         df = self.locations
         if isinstance(df, list) or isinstance(df, tuple):
             lat, lon = df
             lat, lon = floor(lat), floor(lon)
-            lat, _, both = self.make_format(lat, lon)
+            lat, _, both = self.add_easting_and_northing(lat, lon)
             url = '/'.join([lat, both])
             return [f'https://s3.amazonaws.com/elevation-tiles-prod/skadi/{url}.hgt.gz']
 
@@ -139,7 +138,7 @@ class AltitudeDownloader:
             list_of_links = []
             for _, tile in lat_lon_pairs.iterrows():
                 lat, lon = tile[self.lat_col], tile[self.lon_col]
-                lat, _, both = self.make_format(lat, lon)
+                lat, _, both = self.add_easting_and_northing(lat, lon)
                 url = '/'.join([lat, both])
                 list_of_links.append(f'https://s3.amazonaws.com/elevation-tiles-prod/skadi/{url}.hgt.gz')
             return list_of_links
@@ -152,9 +151,8 @@ class AltitudeDownloader:
         block_size = 2014
         progress_bar = tqdm(total=total_size, unit='B', unit_scale=True)
 
-        if response.status_code != 200:
+        if not response.ok:
             return None
-
         with open(os.path.join(self.local_dir, temp_name), 'wb') as writer:
             for data in response.iter_content(chunk_size=block_size):
                 progress_bar.update(len(data))
@@ -169,8 +167,7 @@ class AltitudeDownloader:
     @staticmethod
     def _convert_to_minutes_and_seconds(lat_or_lon_in_decimal_points: float):
         """
-        due to how the data are stored, the minute and second part of the location
-        determines where we can find the height in a tile.
+        Need this info to determine which tile to download since that is how the tiles are indexed.
         """
         if isinstance(lat_or_lon_in_decimal_points, str):
             lat_or_lon_in_decimal_points = float(lat_or_lon_in_decimal_points)
@@ -188,12 +185,15 @@ class AltitudeDownloader:
                 seconds = -seconds
         return degrees, minutes, seconds
 
-    def look_up_altitude(self,
-                         lat: float,
-                         lon: float,
-                         num_rows: int = 3601,
-                         arc_sec: int = 1) -> Union[float, None]:
+    def look_up_altitude_from_tile(self,
+                                   lat: float,
+                                   lon: float,
+                                   num_rows: int = 3601,
+                                   arc_sec: int = 1) -> Union[float, None]:
         """
+        This function is used to find the altitude for any give (lat, lon) pair
+        after the SRTM tile has been downloaded.
+
         the tricky part is the look up logic of east half and west half are slightly different
         so is north and south part.
         """
@@ -222,8 +222,8 @@ class AltitudeDownloader:
 
         with open(path, "rb") as f:
             idx = (index_i * num_rows + index_j) * 2
-            f.seek(idx)  # go to the right spot,
-            buf = f.read(2)  # read two bytes and convert them:
+            f.seek(idx)  # go to the right spot
+            buf = f.read(2)  # read two bytes and convert them
             val = struct.unpack('>h', buf)  # ">h" is a signed two byte integer
 
             if not val == -32768:  # the not-a-valid-sample value
@@ -240,7 +240,7 @@ class AltitudeDownloader:
         result_set = []
         for idx, location in output[[self.lat_col, self.lon_col]].iterrows():
             location_ = [location[self.lat_col], location[self.lon_col]]
-            result_set.append(self.look_up_altitude(*location_))
+            result_set.append(self.look_up_altitude_from_tile(*location_))
 
         output['ALTITUDE'] = result_set
         for file_ in self.local_file_list:
